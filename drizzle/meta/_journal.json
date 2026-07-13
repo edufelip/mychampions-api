@@ -1,0 +1,174 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1782655072458,
+      "tag": "0000_careless_maddog",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782656064047,
+      "tag": "0001_superb_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782657476406,
+      "tag": "0002_smiling_butterfly",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1782657895700,
+      "tag": "0003_dark_dragon_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782665476315,
+      "tag": "0004_wealthy_omega_red",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1782666716200,
+      "tag": "0005_greedy_stone_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782667464599,
+      "tag": "0006_right_pretty_boy",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782670957139,
+      "tag": "0007_boring_wither",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782674204733,
+      "tag": "0008_rapid_arclight",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782724151958,
+      "tag": "0009_fair_spitfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1782725607013,
+      "tag": "0010_noisy_bruce_banner",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782730000000,
+      "tag": "0011_plan_change_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782731200000,
+      "tag": "0012_plan_lists",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1782733257797,
+      "tag": "0013_easy_mole_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1782733754912,
+      "tag": "0014_lethal_nico_minoru",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1782780000000,
+      "tag": "0015_plan_builder_payloads",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1782781761000,
+      "tag": "0016_password_reset_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1782782600000,
+      "tag": "0017_password_reset_token_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1782784000000,
+      "tag": "0018_analytics_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1782785200000,
+      "tag": "0019_subscription_entitlement_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783185600000,
+      "tag": "0020_password_reset_delivery_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783190400000,
+      "tag": "0021_local_email_auth_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1783785215558,
+      "tag": "0022_gifted_luckman",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1783786458124,
+      "tag": "0023_auth_identities",
+      "breakpoints": true
+    }
+  ]
+}

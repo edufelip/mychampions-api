@@ -1,0 +1,6 @@
+.local-storage/
+node_modules/
+.env
+.env.*
+!.env.example
+infra/secrets/
