@@ -38,6 +38,7 @@ import {
 import { createLocalSigningKeyLoader } from './auth/local-signing-key';
 import {
   InMemoryRefreshSessionRepository,
+  InvalidRefreshTokenError,
   RefreshSessionService,
   type RefreshSessionService as RefreshSessionServiceType,
 } from './auth/refresh-session-service';
@@ -1266,28 +1267,43 @@ export function createApp(deps: CreateAppDeps = {}) {
     cookie: AuthCookieJar,
     set: { status?: number | string }
   ) {
-    let refreshSession;
+    let claims;
     try {
-      refreshSession = await refreshSessionService.rotate(refreshToken);
-    } catch {
+      claims = await refreshSessionService.verify(refreshToken);
+    } catch (error) {
+      if (!(error instanceof InvalidRefreshTokenError)) {
+        throw error;
+      }
       set.status = 401;
       return { error: { code: 'invalid_refresh_token' } };
     }
 
-    const claims = refreshSession.claims;
-    const emailNormalized = normalizeEmail(claims.email);
+    const profile = await profileRepository.findByAuthUid(claims.sub);
+    if (!profile) {
+      set.status = 401;
+      return { error: { code: 'invalid_refresh_token' } };
+    }
+
     const authProviderId = claims.authProviderId ?? 'email_password';
-    const profile = await profileRepository.upsertFromSession({
-      authUid: claims.sub,
-      displayName: claims.displayName,
-      emailNormalized,
-    });
     const accessToken = await tokenService.issue({
       sub: claims.sub,
-      email: emailNormalized,
+      email: profile.emailNormalized,
       displayName: profile.displayName,
       emailVerified: claims.emailVerified,
     });
+    let refreshSession;
+    try {
+      refreshSession = await refreshSessionService.rotate(refreshToken, {
+        email: profile.emailNormalized,
+        displayName: profile.displayName,
+      });
+    } catch (error) {
+      if (!(error instanceof InvalidRefreshTokenError)) {
+        throw error;
+      }
+      set.status = 401;
+      return { error: { code: 'invalid_refresh_token' } };
+    }
     const nextRefreshToken = refreshSession.refreshToken;
     const expiresAt = new Date(Date.now() + LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000).toISOString();
 

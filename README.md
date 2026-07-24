@@ -295,7 +295,11 @@ processes started with a non-pinned Bun runtime are caught.
 Every refresh token contains a signed session id while only its SHA-256 digest is
 stored in `auth_sessions`. `POST /auth/dev/refresh` consumes that row and writes
 a replacement row atomically, so replaying an already-consumed refresh token
-returns `401 invalid_refresh_token`.
+returns `401 invalid_refresh_token`. Refresh loads the current server-owned
+profile before rotation, issues access and replacement-token identity claims from
+that profile, and consumes the old session only after all fallible prerequisite
+work succeeds. A transient profile or token-signing failure therefore leaves the
+original refresh token retryable instead of stranding the client.
 
 Server-owned Google and Apple identities are stored in `auth_identities` by the
 provider and immutable provider subject, never by matching email. This prevents

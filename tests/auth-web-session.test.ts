@@ -43,7 +43,13 @@ function makeProfileRepository(): ProfileRepository {
   };
 }
 
-function makeApp(options: { production?: boolean; refreshRevokeFails?: boolean } = {}) {
+function makeApp(
+  options: {
+    production?: boolean;
+    refreshRevokeFails?: boolean;
+    profileRepository?: ProfileRepository;
+  } = {}
+) {
   const config = readConfig({ WEB_ALLOWED_ORIGINS: ALLOWED_ORIGIN });
   const refreshTokenService = createTokenService({
     issuer: config.jwtIssuer,
@@ -69,7 +75,7 @@ function makeApp(options: { production?: boolean; refreshRevokeFails?: boolean }
           }),
         }
       : {}),
-    profileRepository: makeProfileRepository(),
+    profileRepository: options.profileRepository ?? makeProfileRepository(),
     emailAuthGateway: {
       async signIn() {
         return {
@@ -235,6 +241,81 @@ describe('web auth sessions and CORS', () => {
       })
     );
     expect(replay.status).toBe(401);
+  });
+
+  it('refreshes from the current profile without restoring stale identity claims', async () => {
+    const app = makeApp();
+    const signInResponse = await signInCookieMode(app);
+    const signedIn = await signInResponse.json();
+    const originalCookie = cookiePair(signInResponse, 'mychampions_refresh_token');
+
+    const hydrate = await app.handle(
+      new Request('http://server.test/me/hydrate', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${signedIn.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: 'current@example.test',
+          displayName: 'Current User',
+        }),
+      })
+    );
+    expect(hydrate.status).toBe(200);
+
+    const refresh = await app.handle(
+      new Request('http://server.test/auth/session/refresh', {
+        method: 'POST',
+        headers: {
+          cookie: originalCookie,
+          'content-type': 'application/json',
+          origin: ALLOWED_ORIGIN,
+        },
+        body: JSON.stringify({ sessionMode: 'cookie' }),
+      })
+    );
+
+    expect(refresh.status).toBe(200);
+    await expect(refresh.json()).resolves.toMatchObject({
+      profile: {
+        emailNormalized: 'current@example.test',
+        displayName: 'Current User',
+      },
+    });
+  });
+
+  it('keeps the original refresh token retryable when profile loading fails', async () => {
+    const repository = makeProfileRepository();
+    const findByAuthUid = repository.findByAuthUid.bind(repository);
+    let failNextProfileLoad = true;
+    repository.findByAuthUid = async (authUid) => {
+      if (failNextProfileLoad) {
+        failNextProfileLoad = false;
+        throw new Error('database unavailable');
+      }
+      return findByAuthUid(authUid);
+    };
+    const app = makeApp({ profileRepository: repository });
+    const signInResponse = await signInCookieMode(app);
+    const originalCookie = cookiePair(signInResponse, 'mychampions_refresh_token');
+    const refreshRequest = () =>
+      new Request('http://server.test/auth/session/refresh', {
+        method: 'POST',
+        headers: {
+          cookie: originalCookie,
+          'content-type': 'application/json',
+          origin: ALLOWED_ORIGIN,
+        },
+        body: JSON.stringify({ sessionMode: 'cookie' }),
+      });
+
+    const failedRefresh = await app.handle(refreshRequest());
+    expect(failedRefresh.status).toBe(500);
+
+    const retriedRefresh = await app.handle(refreshRequest());
+    expect(retriedRefresh.status).toBe(200);
+    expect(cookiePair(retriedRefresh, 'mychampions_refresh_token')).not.toBe(originalCookie);
   });
 
   it('revokes the current refresh session and clears browser cookies on sign-out', async () => {
