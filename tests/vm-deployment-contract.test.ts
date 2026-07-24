@@ -166,6 +166,24 @@ describe('VM deployment contract', () => {
     expect(evidenceScript).toContain('subscription_entitlement_snapshots');
     expect(evidenceScript).toContain('RevenueCatRestCustomerManager');
     expect(evidenceScript).not.toMatch(/\b(insert|update|delete|truncate|drop)\b/i);
+
+    const timeoutLoopIndex = evidenceScript.indexOf('while (Date.now() <= deadline)');
+    const providerRefreshIndex = evidenceScript.indexOf(
+      'privileges = await customerManager.getCustomerPrivileges(appUserId)',
+      timeoutLoopIndex
+    );
+    const snapshotRefreshIndex = evidenceScript.indexOf(
+      'from subscription_entitlement_snapshots',
+      timeoutLoopIndex
+    );
+    const combinedConvergenceIndex = evidenceScript.indexOf(
+      'if (providerMatches && snapshotMatches)',
+      timeoutLoopIndex
+    );
+    expect(timeoutLoopIndex).toBeGreaterThan(-1);
+    expect(providerRefreshIndex).toBeGreaterThan(timeoutLoopIndex);
+    expect(snapshotRefreshIndex).toBeGreaterThan(providerRefreshIndex);
+    expect(combinedConvergenceIndex).toBeGreaterThan(snapshotRefreshIndex);
   });
 
   it('has a guarded bootstrap path for first public ingress without replacing a healthy slot', async () => {

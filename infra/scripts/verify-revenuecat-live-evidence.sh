@@ -135,13 +135,22 @@ if (!process.env.DATABASE_URL) {
 }
 
 const customerManager = new RevenueCatRestCustomerManager(secretApiKey);
-const privileges = await customerManager.getCustomerPrivileges(appUserId);
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 const deadline = Date.now() + timeoutSeconds * 1000;
+let privileges = null;
 let snapshot = null;
+let converged = false;
 
 try {
   while (Date.now() <= deadline) {
+    try {
+      privileges = await customerManager.getCustomerPrivileges(appUserId);
+    } catch {
+      // A transient provider failure must not let a stale successful read
+      // satisfy the evidence gate. The next iteration performs a fresh read.
+      privileges = null;
+    }
+
     const rows = await sql`
       select
         auth_uid,
@@ -157,13 +166,19 @@ try {
     `;
     snapshot = rows[0] ?? null;
 
-    if (
+    const providerMatches =
+      privileges?.professionalEntitlementStatus === expectedProfessionalStatus &&
+      privileges?.aiEntitlementStatus === expectedAiStatus;
+    const snapshotMatches =
       snapshot?.professional_entitlement_status === expectedProfessionalStatus &&
-      snapshot?.ai_entitlement_status === expectedAiStatus
-    ) {
+      snapshot?.ai_entitlement_status === expectedAiStatus;
+
+    if (providerMatches && snapshotMatches) {
+      converged = true;
       break;
     }
 
+    if (Date.now() >= deadline) break;
     await Bun.sleep(5000);
   }
 } finally {
@@ -176,13 +191,15 @@ const evidence = {
     professionalEntitlementStatus: expectedProfessionalStatus,
     aiEntitlementStatus: expectedAiStatus,
   },
-  revenueCat: {
-    professionalEntitlementStatus: privileges.professionalEntitlementStatus,
-    aiEntitlementStatus: privileges.aiEntitlementStatus,
-    professionalEntitlementExpiresAt: privileges.professionalEntitlementExpiresAt,
-    professionalEntitlementRenewalRisk: privileges.professionalEntitlementRenewalRisk,
-    observedAt: privileges.observedAt,
-  },
+  revenueCat: privileges
+    ? {
+        professionalEntitlementStatus: privileges.professionalEntitlementStatus,
+        aiEntitlementStatus: privileges.aiEntitlementStatus,
+        professionalEntitlementExpiresAt: privileges.professionalEntitlementExpiresAt,
+        professionalEntitlementRenewalRisk: privileges.professionalEntitlementRenewalRisk,
+        observedAt: privileges.observedAt,
+      }
+    : null,
   serverSnapshot: snapshot
     ? {
         professionalEntitlementStatus: snapshot.professional_entitlement_status,
@@ -204,6 +221,7 @@ const evidence = {
 console.log(JSON.stringify(evidence, null, 2));
 
 if (
+  !privileges ||
   privileges.professionalEntitlementStatus !== expectedProfessionalStatus ||
   privileges.aiEntitlementStatus !== expectedAiStatus
 ) {
@@ -214,6 +232,11 @@ if (
   snapshot?.ai_entitlement_status !== expectedAiStatus
 ) {
   throw new Error("Production subscription snapshot did not converge before the deadline.");
+}
+if (!converged) {
+  throw new Error(
+    "RevenueCat privileges and the production snapshot did not converge in the same evidence iteration."
+  );
 }
 '
 REMOTE_SCRIPT

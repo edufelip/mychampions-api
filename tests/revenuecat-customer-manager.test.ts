@@ -77,7 +77,7 @@ describe('mapRevenueCatCustomerPrivileges', () => {
     expect(privileges.professionalEntitlementRenewalRisk).toBe(true);
   });
 
-  it('does not grant expired, refunded, malformed, or missing entitlements', () => {
+  it('does not grant expired, refunded, or missing entitlements', () => {
     const inactive = mapRevenueCatCustomerPrivileges(
       customerBody({
         entitlements: {
@@ -103,21 +103,20 @@ describe('mapRevenueCatCustomerPrivileges', () => {
     expect(inactive.aiEntitlementStatus).toBe('lapsed');
     expect(inactive.professionalEntitlementRenewalRisk).toBe(false);
 
-    const expiredAndMalformed = mapRevenueCatCustomerPrivileges(
+    const expired = mapRevenueCatCustomerPrivileges(
       customerBody({
         entitlements: {
           professional_pro: {
             expires_date: '2026-07-20T12:00:00.000Z',
             product_identifier: 'professional_monthly',
           },
-          student_pro: { expires_date: 'not-a-date' },
         },
       }),
       'user-1',
       NOW
     );
-    expect(expiredAndMalformed.professionalEntitlementStatus).toBe('lapsed');
-    expect(expiredAndMalformed.aiEntitlementStatus).toBe('lapsed');
+    expect(expired.professionalEntitlementStatus).toBe('lapsed');
+    expect(expired.aiEntitlementStatus).toBe('lapsed');
 
     const missing = mapRevenueCatCustomerPrivileges(customerBody(), 'user-1', NOW);
     expect(missing.professionalEntitlementStatus).toBe('lapsed');
@@ -204,6 +203,76 @@ describe('mapRevenueCatCustomerPrivileges', () => {
       RevenueCatCustomerManagerError
     );
   });
+
+  it('rejects missing or malformed canonical subscriber collections', () => {
+    const incompleteCustomers = [
+      { subscriber: {} },
+      { subscriber: { entitlements: {} } },
+      { subscriber: { subscriptions: {} } },
+      { subscriber: { entitlements: [], subscriptions: {} } },
+      { subscriber: { entitlements: {}, subscriptions: null } },
+      {
+        subscriber: {
+          entitlements: { professional_pro: 'active' },
+          subscriptions: {},
+        },
+      },
+      {
+        subscriber: {
+          entitlements: {},
+          subscriptions: { professional_monthly: 'active' },
+        },
+      },
+    ];
+
+    for (const customer of incompleteCustomers) {
+      expect(() => mapRevenueCatCustomerPrivileges(customer, 'user-1', NOW)).toThrow(
+        RevenueCatCustomerManagerError
+      );
+    }
+  });
+
+  it('rejects incomplete entitlement and malformed canonical timestamps', () => {
+    const malformedCustomers = [
+      customerBody({
+        entitlements: {
+          student_pro: {
+            expires_date: 'not-a-date',
+            product_identifier: 'student_monthly',
+          },
+        },
+      }),
+      customerBody({
+        entitlements: {
+          professional_pro: {
+            expires_date: '2026-08-21T12:00:00.000Z',
+          },
+        },
+      }),
+      customerBody({
+        entitlements: {
+          professional_pro: {
+            expires_date: '2026-08-21T12:00:00.000Z',
+            grace_period_expires_date: 'not-a-date',
+            product_identifier: 'professional_monthly',
+          },
+        },
+      }),
+      customerBody({
+        subscriptions: {
+          professional_monthly: {
+            refunded_at: 'not-a-date',
+          },
+        },
+      }),
+    ];
+
+    for (const customer of malformedCustomers) {
+      expect(() => mapRevenueCatCustomerPrivileges(customer, 'user-1', NOW)).toThrow(
+        RevenueCatCustomerManagerError
+      );
+    }
+  });
 });
 
 describe('RevenueCatRestCustomerManager', () => {
@@ -272,6 +341,20 @@ describe('RevenueCatRestCustomerManager', () => {
       fetchFn: async () => new Response('{', { status: 200 }),
     });
     await expect(malformedManager.getCustomerPrivileges('user-1')).rejects.toMatchObject({
+      code: 'invalid_response',
+    });
+  });
+
+  it('rejects a successful response with incomplete canonical collections', async () => {
+    const manager = new RevenueCatRestCustomerManager('sk_test_secret', {
+      fetchFn: async () =>
+        Response.json({
+          request_date: '2026-07-21T11:59:30.000Z',
+          subscriber: { entitlements: {} },
+        }),
+    });
+
+    await expect(manager.getCustomerPrivileges('user-1')).rejects.toMatchObject({
       code: 'invalid_response',
     });
   });

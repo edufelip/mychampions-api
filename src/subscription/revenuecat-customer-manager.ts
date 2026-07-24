@@ -63,10 +63,92 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function invalidSubscriberCollection(message: string): never {
+  throw new RevenueCatCustomerManagerError('invalid_response', message);
+}
+
 function parseDate(value: unknown): Date | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function validateOptionalDate(
+  value: Record<string, unknown>,
+  field: string,
+  description: string
+): void {
+  if (
+    Object.prototype.hasOwnProperty.call(value, field) &&
+    value[field] !== null &&
+    parseDate(value[field]) === null
+  ) {
+    invalidSubscriberCollection(
+      `RevenueCat customer response has a malformed ${description} ${field}.`
+    );
+  }
+}
+
+function readCanonicalSubscriberCollections(subscriber: Record<string, unknown>): {
+  entitlements: Record<string, unknown>;
+  subscriptions: Record<string, unknown>;
+} {
+  if (!isRecord(subscriber.entitlements) || !isRecord(subscriber.subscriptions)) {
+    return invalidSubscriberCollection(
+      'RevenueCat customer response is missing canonical entitlement or subscription collections.'
+    );
+  }
+
+  for (const [entitlementId, entitlement] of Object.entries(subscriber.entitlements)) {
+    if (!isRecord(entitlement)) {
+      invalidSubscriberCollection(
+        `RevenueCat customer response has a malformed entitlement entry for ${entitlementId}.`
+      );
+    }
+    if (!Object.prototype.hasOwnProperty.call(entitlement, 'expires_date')) {
+      invalidSubscriberCollection(
+        `RevenueCat customer response has an incomplete entitlement entry for ${entitlementId}.`
+      );
+    }
+    validateOptionalDate(entitlement, 'expires_date', `entitlement ${entitlementId}`);
+    validateOptionalDate(
+      entitlement,
+      'grace_period_expires_date',
+      `entitlement ${entitlementId}`
+    );
+    if (
+      typeof entitlement.product_identifier !== 'string' ||
+      !entitlement.product_identifier.trim()
+    ) {
+      invalidSubscriberCollection(
+        `RevenueCat customer response has an invalid product identifier for entitlement ${entitlementId}.`
+      );
+    }
+  }
+
+  for (const [productIdentifier, subscription] of Object.entries(subscriber.subscriptions)) {
+    if (!isRecord(subscription)) {
+      invalidSubscriberCollection(
+        `RevenueCat customer response has a malformed subscription entry for ${productIdentifier}.`
+      );
+    }
+    validateOptionalDate(
+      subscription,
+      'billing_issues_detected_at',
+      `subscription ${productIdentifier}`
+    );
+    validateOptionalDate(subscription, 'refunded_at', `subscription ${productIdentifier}`);
+    validateOptionalDate(
+      subscription,
+      'unsubscribe_detected_at',
+      `subscription ${productIdentifier}`
+    );
+  }
+
+  return {
+    entitlements: subscriber.entitlements,
+    subscriptions: subscriber.subscriptions,
+  };
 }
 
 function readObservedDate(customer: RawRevenueCatCustomer, now: Date): Date {
@@ -144,12 +226,9 @@ export function mapRevenueCatCustomerPrivileges(
     );
   }
 
-  const entitlements = isRecord(customer.subscriber.entitlements)
-    ? customer.subscriber.entitlements
-    : {};
-  const subscriptions = isRecord(customer.subscriber.subscriptions)
-    ? customer.subscriber.subscriptions
-    : {};
+  const { entitlements, subscriptions } = readCanonicalSubscriberCollections(
+    customer.subscriber
+  );
   const professionalEntitlement = readEntitlement(entitlements, REVENUECAT_PRO_ENTITLEMENT_ID);
   const aiEntitlement = readEntitlement(entitlements, REVENUECAT_AI_ENTITLEMENT_ID);
   const professionalSubscription = readSubscription(subscriptions, professionalEntitlement);
