@@ -21,6 +21,10 @@ function mapSnapshot(row: SubscriptionEntitlementSnapshotRow): SubscriptionEntit
     authUid: row.authUid,
     professionalEntitlementStatus: row.professionalEntitlementStatus,
     aiEntitlementStatus: row.aiEntitlementStatus,
+    professionalEntitlementExpiresAt: row.professionalEntitlementExpiresAt
+      ? toIso(row.professionalEntitlementExpiresAt)
+      : null,
+    professionalEntitlementRenewalRisk: row.professionalEntitlementRenewalRisk,
     activeStudentCount: row.activeStudentCount,
     source: row.source,
     observedAt: toIso(row.observedAt),
@@ -41,6 +45,10 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
         authUid: input.authUid,
         professionalEntitlementStatus: input.professionalEntitlementStatus,
         aiEntitlementStatus: input.aiEntitlementStatus,
+        professionalEntitlementExpiresAt: input.professionalEntitlementExpiresAt
+          ? new Date(input.professionalEntitlementExpiresAt)
+          : null,
+        professionalEntitlementRenewalRisk: input.professionalEntitlementRenewalRisk ?? false,
         activeStudentCount: input.activeStudentCount,
         source: input.source,
         observedAt,
@@ -51,6 +59,10 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
         set: {
           professionalEntitlementStatus: input.professionalEntitlementStatus,
           aiEntitlementStatus: input.aiEntitlementStatus,
+          professionalEntitlementExpiresAt: input.professionalEntitlementExpiresAt
+            ? new Date(input.professionalEntitlementExpiresAt)
+            : null,
+          professionalEntitlementRenewalRisk: input.professionalEntitlementRenewalRisk ?? false,
           activeStudentCount: input.activeStudentCount,
           source: input.source,
           observedAt,

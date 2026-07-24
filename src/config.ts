@@ -15,8 +15,10 @@ export type ServerConfig = {
   gcsUseAdc: boolean;
   googleClientIds: string[];
   appleClientIds: string[];
+  allowedWebOrigins: string[];
   mealPhotoAnalyzer: 'unconfigured' | 'local_mock';
   localDevAuthEnabled: boolean;
+  revenueCatSecretApiKey: string | null;
   revenueCatWebhookAuthorization: string | null;
   revenueCatWebhookSigningSecret: string | null;
 };
@@ -70,6 +72,7 @@ function isPrivateRsaJwk(value: unknown): value is JWK {
 }
 
 export function readConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
+  const production = env.NODE_ENV === 'production';
   return {
     port: Number.parseInt(env.PORT ?? '3400', 10),
     databaseUrl:
@@ -85,7 +88,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     jwtAudience: env.JWT_AUDIENCE ?? 'mychampions-mobile',
     jwtPluginSecret: env.JWT_PLUGIN_SECRET ?? 'mychampions-local-jwt-plugin-secret',
     authJwtPrivateJwk: readJwtPrivateJwk(env.AUTH_JWT_PRIVATE_JWK),
-    production: env.NODE_ENV === 'production',
+    production,
     gcsBucket: env.GCS_BUCKET?.trim() || null,
     gcsCredentialsPath: env.STORAGE_GCS_CREDENTIALS_PATH?.trim() || null,
     gcsUseAdc: env.STORAGE_GCS_USE_ADC !== 'false',
@@ -95,11 +98,16 @@ export function readConfig(env: Record<string, string | undefined> = process.env
       env.GOOGLE_WEB_CLIENT_ID
     ),
     appleClientIds: configuredValues(env.APPLE_CLIENT_ID, env.APPLE_WEB_CLIENT_ID),
+    allowedWebOrigins: configuredValues(
+      env.WEB_ALLOWED_ORIGINS ??
+        (production ? undefined : 'http://localhost:8081,http://127.0.0.1:8081')
+    ),
     mealPhotoAnalyzer: env.MEAL_PHOTO_ANALYZER === 'local_mock' ? 'local_mock' : 'unconfigured',
     localDevAuthEnabled:
       env.LOCAL_DEV_AUTH_ENABLED !== 'false' &&
       env.NODE_ENV !== 'production' &&
       isExplicitLocalDevVariant(env.APP_VARIANT),
+    revenueCatSecretApiKey: env.REVENUECAT_SECRET_API_KEY?.trim() || null,
     revenueCatWebhookAuthorization: env.REVENUECAT_WEBHOOK_AUTHORIZATION?.trim() || null,
     revenueCatWebhookSigningSecret: env.REVENUECAT_WEBHOOK_SIGNING_SECRET?.trim() || null,
   };

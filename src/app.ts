@@ -1,9 +1,10 @@
 import { bearer } from '@elysiajs/bearer';
+import { cors } from '@elysiajs/cors';
 import { jwt } from '@elysiajs/jwt';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Elysia, t } from 'elysia';
 
-import { readConfig } from './config';
+import { readConfig, type ServerConfig } from './config';
 import { createDatabase } from './db/client';
 import {
   EmailAuthGatewayError,
@@ -30,6 +31,7 @@ import {
 } from './auth/password-reset-delivery';
 import {
   LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+  LOCAL_REFRESH_TOKEN_EXPIRES_IN_SECONDS,
   createTokenService,
   type TokenService,
 } from './auth/tokens';
@@ -49,6 +51,11 @@ import type { AnalyticsEventRepository } from './analytics/repository';
 import { PostgresAnalyticsEventRepository } from './analytics/postgres-repository';
 import type { SubscriptionEntitlementRepository } from './subscription/entitlement-repository';
 import { PostgresSubscriptionEntitlementRepository } from './subscription/postgres-entitlement-repository';
+import {
+  RevenueCatCustomerManagerError,
+  RevenueCatRestCustomerManager,
+  type RevenueCatCustomerManager,
+} from './subscription/revenuecat-customer-manager';
 import {
   ConnectionAlreadyExistsError,
   ConnectionForbiddenError,
@@ -125,6 +132,7 @@ import { PostgresPlanRepository } from './plans/postgres-plan-repository';
 import { findStarterTemplate, listStarterTemplates } from './plans/starter-templates';
 
 type CreateAppDeps = {
+  config?: ServerConfig;
   profileRepository?: ProfileRepository;
   supportMessageRepository?: SupportMessageRepository;
   connectionRepository?: ConnectionRepository;
@@ -148,9 +156,11 @@ type CreateAppDeps = {
   socialIdentityRepository?: SocialIdentityRepository;
   analyticsEventRepository?: AnalyticsEventRepository;
   subscriptionEntitlementRepository?: SubscriptionEntitlementRepository;
+  revenueCatCustomerManager?: RevenueCatCustomerManager;
 };
 
 const LOCAL_ACCESS_TOKEN_COOKIE = 'mychampions_access_token';
+const WEB_REFRESH_TOKEN_COOKIE = 'mychampions_refresh_token';
 const MAX_MEAL_PHOTO_ANALYSIS_IMAGE_BASE64_LENGTH = 6_000_000;
 
 function normalizeEmail(email: string): string {
@@ -169,16 +179,14 @@ const SENSITIVE_ANALYTICS_PROPERTY_KEYS = new Set([
   'secret',
 ]);
 
-const REVENUECAT_PRO_ENTITLEMENT_ID = 'professional_pro';
-const REVENUECAT_AI_ENTITLEMENT_ID = 'student_pro';
-const REVENUECAT_LAPSED_EVENT_TYPES = new Set(['EXPIRATION']);
 const REVENUECAT_SIGNATURE_TOLERANCE_SECONDS = 300;
 
 type RevenueCatWebhookEvent = {
   app_user_id?: unknown;
-  entitlement_ids?: unknown;
   event_timestamp_ms?: unknown;
-  expiration_at_ms?: unknown;
+  id?: unknown;
+  transferred_from?: unknown;
+  transferred_to?: unknown;
   type?: unknown;
 };
 
@@ -219,43 +227,20 @@ function parseRevenueCatWebhookPayload(rawBody: string): { event: RevenueCatWebh
   }
 }
 
-function parseRevenueCatTimestamp(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
+function revenueCatWebhookAppUserIds(event: RevenueCatWebhookEvent): string[] {
+  const ids = new Set<string>();
+  if (typeof event.app_user_id === 'string' && event.app_user_id.trim()) {
+    ids.add(event.app_user_id.trim());
   }
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
+  if (event.type === 'TRANSFER') {
+    for (const value of [event.transferred_from, event.transferred_to]) {
+      if (!Array.isArray(value)) continue;
+      for (const appUserId of value) {
+        if (typeof appUserId === 'string' && appUserId.trim()) ids.add(appUserId.trim());
+      }
+    }
   }
-  return null;
-}
-
-function revenueCatObservedAt(event: RevenueCatWebhookEvent): string {
-  const eventTimestampMs = parseRevenueCatTimestamp(event.event_timestamp_ms);
-  if (eventTimestampMs !== null) {
-    return new Date(eventTimestampMs).toISOString();
-  }
-  return new Date().toISOString();
-}
-
-function revenueCatEntitlementIds(event: RevenueCatWebhookEvent): Set<string> {
-  if (!Array.isArray(event.entitlement_ids)) {
-    return new Set();
-  }
-  return new Set(event.entitlement_ids.filter((value): value is string => typeof value === 'string'));
-}
-
-function isRevenueCatEntitlementActive(event: RevenueCatWebhookEvent, entitlementId: string): boolean {
-  const entitlementIds = revenueCatEntitlementIds(event);
-  if (!entitlementIds.has(entitlementId)) {
-    return false;
-  }
-  const eventType = typeof event.type === 'string' ? event.type : '';
-  if (REVENUECAT_LAPSED_EVENT_TYPES.has(eventType)) {
-    return false;
-  }
-  const expirationAtMs = parseRevenueCatTimestamp(event.expiration_at_ms);
-  return expirationAtMs === null || expirationAtMs > Date.now();
+  return [...ids];
 }
 
 function parseRevenueCatSignatureHeader(header: string): { timestamp: number; signature: string } | null {
@@ -317,6 +302,7 @@ type DevSessionBody = {
   email: string;
   displayName: string;
   authProviderId?: 'email_password' | 'google' | 'apple';
+  sessionMode?: 'bearer' | 'cookie';
 };
 
 type DevRefreshBody = {
@@ -336,6 +322,7 @@ function parseDevSessionBody(body: unknown): DevSessionBody | null {
   const email = typeof body.email === 'string' ? body.email : null;
   const displayName = typeof body.displayName === 'string' ? body.displayName : null;
   const authProviderId = body.authProviderId;
+  const sessionMode = body.sessionMode;
 
   if (!email || !isEmailLike(normalizeEmail(email)) || !displayName || displayName.trim().length === 0) {
     return null;
@@ -350,10 +337,15 @@ function parseDevSessionBody(body: unknown): DevSessionBody | null {
     return null;
   }
 
+  if (sessionMode !== undefined && sessionMode !== 'bearer' && sessionMode !== 'cookie') {
+    return null;
+  }
+
   return {
     email,
     displayName,
     authProviderId,
+    sessionMode,
   };
 }
 
@@ -365,15 +357,59 @@ function parseDevRefreshBody(body: unknown): DevRefreshBody | null {
   return { refreshToken: body.refreshToken };
 }
 
-function localAccessTokenCookieOptions(accessToken: string) {
+function localAccessTokenCookieOptions(accessToken: string, secure: boolean) {
   return {
     value: accessToken,
     httpOnly: true,
     sameSite: 'lax' as const,
     path: '/',
     maxAge: LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+    secure,
   };
 }
+
+function webRefreshTokenCookieOptions(refreshToken: string, secure: boolean) {
+  return {
+    value: refreshToken,
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    path: '/auth/session',
+    maxAge: LOCAL_REFRESH_TOKEN_EXPIRES_IN_SECONDS,
+    secure,
+  };
+}
+
+function clearedCookieOptions(path: string, secure: boolean) {
+  return {
+    value: '',
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    path,
+    maxAge: 0,
+    expires: new Date(0),
+    secure,
+  };
+}
+
+type SessionMode = 'bearer' | 'cookie';
+
+function resolveSessionModeForRequest(
+  requestedMode: SessionMode | undefined,
+  request: Request,
+  allowedWebOrigins: string[]
+): SessionMode {
+  const origin = request.headers.get('origin');
+  if (origin && allowedWebOrigins.includes(origin)) return 'cookie';
+  return requestedMode ?? 'bearer';
+}
+
+type AuthCookieJar = Record<
+  string,
+  {
+    value?: unknown;
+    set: (options: ReturnType<typeof localAccessTokenCookieOptions>) => void;
+  }
+>;
 
 function emailAuthGatewayErrorResponse(error: unknown, set: { status?: number | string }) {
   if (!(error instanceof EmailAuthGatewayError)) {
@@ -906,7 +942,7 @@ function exerciseSearchGatewayErrorResponse(error: unknown, set: { status?: numb
 }
 
 export function createApp(deps: CreateAppDeps = {}) {
-  const config = readConfig();
+  const config = deps.config ?? readConfig();
   const database =
     deps.profileRepository &&
     deps.supportMessageRepository &&
@@ -1173,12 +1209,16 @@ export function createApp(deps: CreateAppDeps = {}) {
             throw new Error('subscription_entitlement_repository_not_configured');
           },
         });
+  const revenueCatCustomerManager =
+    deps.revenueCatCustomerManager ??
+    new RevenueCatRestCustomerManager(config.revenueCatSecretApiKey ?? '');
 
   async function issueProviderAuthSession(
     identity: EmailAuthIdentity | ResolvedSocialIdentity,
     authProviderId: 'email_password' | 'google' | 'apple',
-    cookie: Record<string, { set: (options: ReturnType<typeof localAccessTokenCookieOptions>) => void }>,
-    set: { status?: number | string }
+    cookie: AuthCookieJar,
+    set: { status?: number | string },
+    sessionMode: SessionMode = 'bearer'
   ) {
     const emailNormalized = normalizeEmail(identity.email);
     const profile = await profileRepository.upsertFromSession({
@@ -1202,10 +1242,16 @@ export function createApp(deps: CreateAppDeps = {}) {
     const expiresAt = new Date(Date.now() + LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000).toISOString();
 
     set.status = 201;
-    cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(localAccessTokenCookieOptions(accessToken));
+    if (sessionMode === 'cookie') {
+      cookie[WEB_REFRESH_TOKEN_COOKIE].set(webRefreshTokenCookieOptions(refreshToken, config.production));
+    } else {
+      cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(
+        localAccessTokenCookieOptions(accessToken, config.production)
+      );
+    }
     return {
       accessToken,
-      refreshToken,
+      ...(sessionMode === 'bearer' ? { refreshToken } : {}),
       tokenType: 'Bearer',
       expiresAt,
       authProviderIds: [authProviderId],
@@ -1214,7 +1260,78 @@ export function createApp(deps: CreateAppDeps = {}) {
     };
   }
 
+  async function refreshAuthSession(
+    refreshToken: string,
+    sessionMode: SessionMode,
+    cookie: AuthCookieJar,
+    set: { status?: number | string }
+  ) {
+    let refreshSession;
+    try {
+      refreshSession = await refreshSessionService.rotate(refreshToken);
+    } catch {
+      set.status = 401;
+      return { error: { code: 'invalid_refresh_token' } };
+    }
+
+    const claims = refreshSession.claims;
+    const emailNormalized = normalizeEmail(claims.email);
+    const authProviderId = claims.authProviderId ?? 'email_password';
+    const profile = await profileRepository.upsertFromSession({
+      authUid: claims.sub,
+      displayName: claims.displayName,
+      emailNormalized,
+    });
+    const accessToken = await tokenService.issue({
+      sub: claims.sub,
+      email: emailNormalized,
+      displayName: profile.displayName,
+      emailVerified: claims.emailVerified,
+    });
+    const nextRefreshToken = refreshSession.refreshToken;
+    const expiresAt = new Date(Date.now() + LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000).toISOString();
+
+    if (sessionMode === 'cookie') {
+      cookie[WEB_REFRESH_TOKEN_COOKIE].set(
+        webRefreshTokenCookieOptions(nextRefreshToken, config.production)
+      );
+    } else {
+      cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(
+        localAccessTokenCookieOptions(accessToken, config.production)
+      );
+    }
+    return {
+      accessToken,
+      ...(sessionMode === 'bearer' ? { refreshToken: nextRefreshToken } : {}),
+      tokenType: 'Bearer',
+      expiresAt,
+      authProviderIds: [authProviderId],
+      emailVerified: claims.emailVerified,
+      profile,
+    };
+  }
+
   const app = new Elysia()
+    .onRequest(({ request, set }) => {
+      const origin = request.headers.get('origin');
+      if (origin && !config.allowedWebOrigins.includes(origin)) {
+        set.status = 403;
+        return { error: { code: 'origin_not_allowed' } };
+      }
+    })
+    .use(
+      cors({
+        origin: (request) => {
+          const origin = request.headers.get('origin');
+          return origin !== null && config.allowedWebOrigins.includes(origin);
+        },
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+        exposeHeaders: ['X-Request-ID'],
+        credentials: true,
+        maxAge: 600,
+      })
+    )
     .use(bearer())
     .use(jwt({ name: 'jwt', secret: config.jwtPluginSecret }))
     .get('/health', () => ({
@@ -1227,7 +1344,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     .get('/.well-known/jwks.json', async () => tokenService.jwks())
     .post(
       '/auth/dev/session',
-      async ({ body, cookie, set }) => {
+      async ({ body, cookie, request, set }) => {
         if (!config.localDevAuthEnabled) {
           set.status = 404;
           return { error: { code: 'local_dev_auth_disabled' } };
@@ -1260,12 +1377,25 @@ export function createApp(deps: CreateAppDeps = {}) {
           authProviderId,
         });
         const expiresAt = new Date(Date.now() + LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000).toISOString();
+        const sessionMode = resolveSessionModeForRequest(
+          parsedBody.sessionMode,
+          request,
+          config.allowedWebOrigins
+        );
 
         set.status = 201;
-        cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(localAccessTokenCookieOptions(accessToken));
+        if (sessionMode === 'cookie') {
+          cookie[WEB_REFRESH_TOKEN_COOKIE].set(
+            webRefreshTokenCookieOptions(refreshToken, config.production)
+          );
+        } else {
+          cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(
+            localAccessTokenCookieOptions(accessToken, config.production)
+          );
+        }
         return {
           accessToken,
-          refreshToken,
+          ...(sessionMode === 'bearer' ? { refreshToken } : {}),
           tokenType: 'Bearer',
           expiresAt,
           authProviderIds: [authProviderId],
@@ -1287,47 +1417,79 @@ export function createApp(deps: CreateAppDeps = {}) {
           return validationError(set);
         }
 
-        let refreshSession;
-        try {
-          refreshSession = await refreshSessionService.rotate(parsedBody.refreshToken);
-        } catch {
+        return refreshAuthSession(parsedBody.refreshToken, 'bearer', cookie, set);
+      }
+    )
+    .post(
+      '/auth/session/refresh',
+      async ({ body, cookie, request, set }) => {
+        const sessionMode = resolveSessionModeForRequest(
+          body?.sessionMode,
+          request,
+          config.allowedWebOrigins
+        );
+        const cookieRefreshToken = cookie[WEB_REFRESH_TOKEN_COOKIE].value;
+        const refreshToken =
+          sessionMode === 'cookie'
+            ? typeof cookieRefreshToken === 'string'
+              ? cookieRefreshToken
+              : null
+            : body?.refreshToken ?? null;
+        if (!refreshToken) {
           set.status = 401;
           return { error: { code: 'invalid_refresh_token' } };
         }
-
-        const claims = refreshSession.claims;
-
-        const emailNormalized = normalizeEmail(claims.email);
-        const authProviderId = claims.authProviderId ?? 'email_password';
-        const profile = await profileRepository.upsertFromSession({
-          authUid: claims.sub,
-          displayName: claims.displayName,
-          emailNormalized,
-        });
-        const accessToken = await tokenService.issue({
-          sub: claims.sub,
-          email: emailNormalized,
-          displayName: profile.displayName,
-          emailVerified: claims.emailVerified,
-        });
-        const refreshToken = refreshSession.refreshToken;
-        const expiresAt = new Date(Date.now() + LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000).toISOString();
-
-        cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(localAccessTokenCookieOptions(accessToken));
-        return {
-          accessToken,
-          refreshToken,
-          tokenType: 'Bearer',
-          expiresAt,
-          authProviderIds: [authProviderId],
-          emailVerified: claims.emailVerified,
-          profile,
-        };
+        return refreshAuthSession(refreshToken, sessionMode, cookie, set);
+      },
+      {
+        body: t.Optional(
+          t.Object({
+            refreshToken: t.Optional(t.String({ minLength: 1 })),
+            sessionMode: t.Optional(t.Union([t.Literal('bearer'), t.Literal('cookie')])),
+          })
+        ),
+      }
+    )
+    .post(
+      '/auth/session/sign-out',
+      async ({ body, cookie, set }) => {
+        const cookieRefreshToken = cookie[WEB_REFRESH_TOKEN_COOKIE].value;
+        const refreshToken =
+          typeof cookieRefreshToken === 'string' ? cookieRefreshToken : body?.refreshToken;
+        let revokeFailed = false;
+        if (refreshToken) {
+          try {
+            await refreshSessionService.revoke(refreshToken);
+          } catch {
+            revokeFailed = true;
+          }
+        }
+        cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(clearedCookieOptions('/', config.production));
+        cookie[WEB_REFRESH_TOKEN_COOKIE].set(
+          clearedCookieOptions('/auth/session', config.production)
+        );
+        if (revokeFailed) {
+          set.status = 503;
+          return {
+            error: {
+              code: 'refresh_session_revocation_failed',
+              message: 'The local session was cleared, but server revocation must be retried.',
+            },
+          };
+        }
+        set.status = 204;
+      },
+      {
+        body: t.Optional(
+          t.Object({
+            refreshToken: t.Optional(t.String({ minLength: 1 })),
+          })
+        ),
       }
     )
     .post(
       '/auth/email/sign-in',
-      async ({ body, cookie, set }) => {
+      async ({ body, cookie, request, set }) => {
         const emailNormalized = normalizeEmail(body.email);
         if (!isEmailLike(emailNormalized)) {
           set.status = 400;
@@ -1339,7 +1501,13 @@ export function createApp(deps: CreateAppDeps = {}) {
             email: emailNormalized,
             password: body.password,
           });
-          return await issueProviderAuthSession(identity, 'email_password', cookie, set);
+          return await issueProviderAuthSession(
+            identity,
+            'email_password',
+            cookie,
+            set,
+            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins)
+          );
         } catch (error) {
           return emailAuthGatewayErrorResponse(error, set);
         }
@@ -1348,12 +1516,13 @@ export function createApp(deps: CreateAppDeps = {}) {
         body: t.Object({
           email: t.String({ minLength: 1 }),
           password: t.String({ minLength: 1 }),
+          sessionMode: t.Optional(t.Union([t.Literal('bearer'), t.Literal('cookie')])),
         }),
       }
     )
     .post(
       '/auth/email/create-account',
-      async ({ body, cookie, set }) => {
+      async ({ body, cookie, request, set }) => {
         const emailNormalized = normalizeEmail(body.email);
         const displayName = body.displayName.trim();
         if (!isEmailLike(emailNormalized)) {
@@ -1371,7 +1540,13 @@ export function createApp(deps: CreateAppDeps = {}) {
             password: body.password,
             displayName,
           });
-          return await issueProviderAuthSession(identity, 'email_password', cookie, set);
+          return await issueProviderAuthSession(
+            identity,
+            'email_password',
+            cookie,
+            set,
+            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins)
+          );
         } catch (error) {
           return emailAuthGatewayErrorResponse(error, set);
         }
@@ -1381,12 +1556,13 @@ export function createApp(deps: CreateAppDeps = {}) {
           email: t.String({ minLength: 1 }),
           password: t.String({ minLength: 1 }),
           displayName: t.String({ minLength: 1 }),
+          sessionMode: t.Optional(t.Union([t.Literal('bearer'), t.Literal('cookie')])),
         }),
       }
     )
     .post(
       '/auth/social/sign-in',
-      async ({ body, cookie, set }) => {
+      async ({ body, cookie, request, set }) => {
         try {
           const verifiedIdentity = await socialAuthGateway.signInWithIdToken({
             provider: body.provider,
@@ -1395,7 +1571,13 @@ export function createApp(deps: CreateAppDeps = {}) {
             ...(body.nonce ? { nonce: body.nonce } : {}),
           });
           const identity = await socialIdentityService.resolve(verifiedIdentity);
-          return await issueProviderAuthSession(identity, identity.provider, cookie, set);
+          return await issueProviderAuthSession(
+            identity,
+            identity.provider,
+            cookie,
+            set,
+            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins)
+          );
         } catch (error) {
           return socialAuthGatewayErrorResponse(error, set);
         }
@@ -1406,6 +1588,7 @@ export function createApp(deps: CreateAppDeps = {}) {
           idToken: t.String({ minLength: 1 }),
           accessToken: t.Optional(t.String({ minLength: 1 })),
           nonce: t.Optional(t.String({ minLength: 1 })),
+          sessionMode: t.Optional(t.Union([t.Literal('bearer'), t.Literal('cookie')])),
         }),
       }
     )
@@ -1539,38 +1722,68 @@ export function createApp(deps: CreateAppDeps = {}) {
       }
 
       const payload = parseRevenueCatWebhookPayload(rawBody);
-      const appUserId = payload?.event.app_user_id;
-      if (!payload || typeof appUserId !== 'string' || !appUserId.trim()) {
+      const appUserIds = payload ? revenueCatWebhookAppUserIds(payload.event) : [];
+      if (!payload || appUserIds.length === 0) {
         set.status = 400;
         return {
           error: {
             code: 'invalid_revenuecat_webhook_payload',
-            message: 'RevenueCat webhook event.app_user_id is required.',
+            message:
+              'RevenueCat webhook requires event.app_user_id or transfer customer identifiers.',
           },
         };
       }
 
-      await subscriptionEntitlementRepository.upsertSnapshot({
-        authUid: appUserId.trim(),
-        professionalEntitlementStatus: isRevenueCatEntitlementActive(
-          payload.event,
-          REVENUECAT_PRO_ENTITLEMENT_ID
-        )
-          ? 'active'
-          : 'lapsed',
-        aiEntitlementStatus: isRevenueCatEntitlementActive(
-          payload.event,
-          REVENUECAT_AI_ENTITLEMENT_ID
-        )
-          ? 'active'
-          : 'lapsed',
-        activeStudentCount: null,
-        source: 'revenuecat',
-        observedAt: revenueCatObservedAt(payload.event),
-      });
+      let customerPrivileges;
+      try {
+        customerPrivileges = await Promise.all(
+          appUserIds.map((appUserId) =>
+            revenueCatCustomerManager.getCustomerPrivileges(appUserId)
+          )
+        );
+      } catch (error) {
+        const configurationFailure =
+          error instanceof RevenueCatCustomerManagerError && error.code === 'configuration';
+        set.status = configurationFailure ? 503 : 502;
+        return {
+          error: {
+            code: configurationFailure
+              ? 'revenuecat_customer_api_not_configured'
+              : 'revenuecat_customer_reconciliation_failed',
+            message: configurationFailure
+              ? 'RevenueCat canonical customer lookup is not configured.'
+              : 'RevenueCat canonical customer lookup failed.',
+          },
+        };
+      }
+
+      try {
+        await Promise.all(
+          customerPrivileges.map((privileges) =>
+            subscriptionEntitlementRepository.upsertSnapshot({
+              authUid: privileges.appUserId,
+              professionalEntitlementStatus: privileges.professionalEntitlementStatus,
+              aiEntitlementStatus: privileges.aiEntitlementStatus,
+              professionalEntitlementExpiresAt: privileges.professionalEntitlementExpiresAt,
+              professionalEntitlementRenewalRisk: privileges.professionalEntitlementRenewalRisk,
+              activeStudentCount: null,
+              source: 'revenuecat',
+              observedAt: privileges.observedAt,
+            })
+          )
+        );
+      } catch {
+        set.status = 503;
+        return {
+          error: {
+            code: 'revenuecat_snapshot_persistence_failed',
+            message: 'RevenueCat customer state could not be persisted; retry the delivery.',
+          },
+        };
+      }
 
       set.status = 200;
-      return { status: 'accepted' };
+      return { status: 'accepted', reconciledCustomers: customerPrivileges.length };
     })
     .get('/me', async ({ auth, set }) => {
       if (!auth?.sub) {
@@ -1608,10 +1821,30 @@ export function createApp(deps: CreateAppDeps = {}) {
           return { error: { code: 'invalid_observed_at', message: 'observedAt must be an ISO date.' } };
         }
 
+        const professionalEntitlementExpiresAt = body.professionalEntitlementExpiresAt
+          ? new Date(body.professionalEntitlementExpiresAt)
+          : null;
+        if (
+          professionalEntitlementExpiresAt &&
+          !Number.isFinite(professionalEntitlementExpiresAt.getTime())
+        ) {
+          set.status = 400;
+          return {
+            error: {
+              code: 'invalid_professional_entitlement_expiry',
+              message: 'professionalEntitlementExpiresAt must be an ISO date or null.',
+            },
+          };
+        }
+
         const snapshot = await subscriptionEntitlementRepository.upsertSnapshot({
           authUid: auth.sub,
           professionalEntitlementStatus: body.professionalEntitlementStatus,
           aiEntitlementStatus: body.aiEntitlementStatus,
+          professionalEntitlementExpiresAt:
+            professionalEntitlementExpiresAt?.toISOString() ?? null,
+          professionalEntitlementRenewalRisk:
+            body.professionalEntitlementRenewalRisk ?? false,
           activeStudentCount: body.activeStudentCount ?? null,
           source: 'revenuecat',
           observedAt: observedAt.toISOString(),
@@ -1633,6 +1866,10 @@ export function createApp(deps: CreateAppDeps = {}) {
             t.Literal('unknown'),
           ]),
           activeStudentCount: t.Optional(t.Number({ minimum: 0 })),
+          professionalEntitlementExpiresAt: t.Optional(
+            t.Union([t.String({ minLength: 1 }), t.Null()])
+          ),
+          professionalEntitlementRenewalRisk: t.Optional(t.Boolean()),
           observedAt: t.Optional(t.String({ minLength: 1 })),
         }),
       }

@@ -47,4 +47,24 @@ export class PostgresRefreshSessionRepository implements RefreshSessionRepositor
       return true;
     });
   }
+
+  async revoke(input: {
+    sessionId: string;
+    refreshTokenDigest: string;
+    now: Date;
+  }): Promise<boolean> {
+    const [revoked] = await this.db
+      .update(authSessions)
+      .set({ revokedAt: input.now })
+      .where(
+        and(
+          eq(authSessions.id, input.sessionId),
+          eq(authSessions.refreshTokenDigest, input.refreshTokenDigest),
+          isNull(authSessions.revokedAt),
+          gt(authSessions.expiresAt, input.now)
+        )
+      )
+      .returning({ id: authSessions.id });
+    return Boolean(revoked);
+  }
 }

@@ -49,6 +49,21 @@ if ! grep -q '^AUTH_JWT_PRIVATE_JWK=.' "$env_file" || ! grep -q '^GCS_BUCKET=.' 
   exit 1
 fi
 
+for revenuecat_runtime_key in \
+  REVENUECAT_SECRET_API_KEY \
+  REVENUECAT_WEBHOOK_AUTHORIZATION \
+  REVENUECAT_WEBHOOK_SIGNING_SECRET; do
+  if ! grep -q "^${revenuecat_runtime_key}=." "$env_file"; then
+    echo "The runtime env file must contain a configured ${revenuecat_runtime_key} value." >&2
+    exit 1
+  fi
+done
+
+if ! grep -q '^REVENUECAT_SECRET_API_KEY=sk_' "$env_file"; then
+  echo "REVENUECAT_SECRET_API_KEY must be a server-only sk_* key before production cutover." >&2
+  exit 1
+fi
+
 if [[ ! -f "/etc/letsencrypt/live/$public_domain/fullchain.pem" || ! -f "/etc/letsencrypt/live/$public_domain/privkey.pem" ]]; then
   echo "TLS certificates for $public_domain are required before ingress cutover." >&2
   exit 1

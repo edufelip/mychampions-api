@@ -137,6 +137,12 @@ export const subscriptionEntitlementSnapshots = pgTable(
     aiEntitlementStatus: text('ai_entitlement_status', {
       enum: ['active', 'lapsed', 'unknown'],
     }).notNull(),
+    professionalEntitlementExpiresAt: timestamp('professional_entitlement_expires_at', {
+      withTimezone: true,
+    }),
+    professionalEntitlementRenewalRisk: boolean('professional_entitlement_renewal_risk')
+      .notNull()
+      .default(false),
     activeStudentCount: integer('active_student_count'),
     source: text('source', { enum: ['revenuecat'] }).notNull().default('revenuecat'),
     observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),

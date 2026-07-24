@@ -169,6 +169,13 @@
       "when": 1783786458124,
       "tag": "0023_auth_identities",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784683683064,
+      "tag": "0024_mighty_nehzno",
+      "breakpoints": true
     }
   ]
 }
