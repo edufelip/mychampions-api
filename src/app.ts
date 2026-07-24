@@ -1226,6 +1226,9 @@ export function createApp(deps: CreateAppDeps = {}) {
           async upsertSnapshot() {
             throw new Error('subscription_entitlement_repository_not_configured');
           },
+          async upsertSnapshotsAtomically() {
+            throw new Error('subscription_entitlement_repository_not_configured');
+          },
           async findLatestForAuthUid() {
             throw new Error('subscription_entitlement_repository_not_configured');
           },
@@ -1820,19 +1823,17 @@ export function createApp(deps: CreateAppDeps = {}) {
       }
 
       try {
-        await Promise.all(
-          customerPrivileges.map((privileges) =>
-            subscriptionEntitlementRepository.upsertSnapshot({
-              authUid: privileges.appUserId,
-              professionalEntitlementStatus: privileges.professionalEntitlementStatus,
-              aiEntitlementStatus: privileges.aiEntitlementStatus,
-              professionalEntitlementExpiresAt: privileges.professionalEntitlementExpiresAt,
-              professionalEntitlementRenewalRisk: privileges.professionalEntitlementRenewalRisk,
-              activeStudentCount: null,
-              source: 'revenuecat',
-              observedAt: privileges.observedAt,
-            })
-          )
+        await subscriptionEntitlementRepository.upsertSnapshotsAtomically(
+          customerPrivileges.map((privileges) => ({
+            authUid: privileges.appUserId,
+            professionalEntitlementStatus: privileges.professionalEntitlementStatus,
+            aiEntitlementStatus: privileges.aiEntitlementStatus,
+            professionalEntitlementExpiresAt: privileges.professionalEntitlementExpiresAt,
+            professionalEntitlementRenewalRisk: privileges.professionalEntitlementRenewalRisk,
+            activeStudentCount: null,
+            source: 'revenuecat',
+            observedAt: privileges.observedAt,
+          }))
         );
       } catch {
         set.status = 503;

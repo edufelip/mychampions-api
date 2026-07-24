@@ -91,6 +91,33 @@ describe('PostgresSubscriptionEntitlementRepository', () => {
     });
   });
 
+  it('rolls back every customer when one snapshot in a transfer batch fails', async () => {
+    await expect(
+      repository.upsertSnapshotsAtomically([
+        {
+          authUid: 'transfer-from',
+          professionalEntitlementStatus: 'lapsed',
+          aiEntitlementStatus: 'lapsed',
+          activeStudentCount: null,
+          source: 'revenuecat',
+          observedAt: '2026-07-03T17:00:00.000Z',
+        },
+        {
+          authUid: 'transfer-to',
+          professionalEntitlementStatus: 'active',
+          aiEntitlementStatus: 'lapsed',
+          activeStudentCount: null,
+          source: 'revenuecat',
+          observedAt: 'not-a-date',
+        },
+      ])
+    ).rejects.toThrow();
+
+    const [{ count }] =
+      await database.client`select count(*)::int as count from subscription_entitlement_snapshots`;
+    expect(count).toBe(0);
+  });
+
   it('finds the latest RevenueCat entitlement snapshot for one auth user', async () => {
     await repository.upsertSnapshot({
       authUid: 'auth-1',

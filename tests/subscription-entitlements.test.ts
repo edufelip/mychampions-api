@@ -78,6 +78,20 @@ function makeSubscriptionRepository() {
           updatedAt: new Date(0).toISOString(),
         };
       },
+      async upsertSnapshotsAtomically(inputs: Array<{
+        authUid: string;
+        professionalEntitlementStatus: 'active' | 'lapsed' | 'unknown';
+        aiEntitlementStatus: 'active' | 'lapsed' | 'unknown';
+        professionalEntitlementExpiresAt?: string | null;
+        professionalEntitlementRenewalRisk?: boolean;
+        activeStudentCount: number | null;
+        source: 'revenuecat';
+        observedAt: string;
+      }>) {
+        const updatedAt = new Date(0).toISOString();
+        saved.push(...inputs);
+        return inputs.map((input) => ({ ...input, updatedAt }));
+      },
       async findLatestForAuthUid(authUid: string) {
         const latest = saved
           .filter((row): row is {
@@ -699,6 +713,9 @@ describe('subscription entitlement snapshot API', () => {
     const app = createApp({
       subscriptionEntitlementRepository: {
         async upsertSnapshot() {
+          throw new Error('database unavailable');
+        },
+        async upsertSnapshotsAtomically() {
           throw new Error('database unavailable');
         },
         async findLatestForAuthUid() {

@@ -28,5 +28,9 @@ export interface SubscriptionEntitlementRepository {
     input: UpsertSubscriptionEntitlementSnapshotInput
   ): Promise<SubscriptionEntitlementSnapshot>;
 
+  upsertSnapshotsAtomically(
+    inputs: UpsertSubscriptionEntitlementSnapshotInput[]
+  ): Promise<SubscriptionEntitlementSnapshot[]>;
+
   findLatestForAuthUid(authUid: string): Promise<SubscriptionEntitlementSnapshot | null>;
 }

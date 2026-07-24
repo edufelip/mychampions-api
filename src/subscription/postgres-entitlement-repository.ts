@@ -7,9 +7,13 @@ import type {
   UpsertSubscriptionEntitlementSnapshotInput,
 } from './entitlement-repository';
 
-type Db = {
+type TransactionDb = {
   insert: Function;
   select: Function;
+};
+
+type Db = TransactionDb & {
+  transaction: <T>(callback: (transaction: TransactionDb) => Promise<T>) => Promise<T>;
 };
 
 function toIso(value: Date | string): string {
@@ -38,8 +42,27 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
   async upsertSnapshot(
     input: UpsertSubscriptionEntitlementSnapshotInput
   ): Promise<SubscriptionEntitlementSnapshot> {
+    return this.upsertSnapshotWithDb(this.db, input);
+  }
+
+  async upsertSnapshotsAtomically(
+    inputs: UpsertSubscriptionEntitlementSnapshotInput[]
+  ): Promise<SubscriptionEntitlementSnapshot[]> {
+    return this.db.transaction(async (transaction) => {
+      const snapshots: SubscriptionEntitlementSnapshot[] = [];
+      for (const input of inputs) {
+        snapshots.push(await this.upsertSnapshotWithDb(transaction, input));
+      }
+      return snapshots;
+    });
+  }
+
+  private async upsertSnapshotWithDb(
+    db: TransactionDb,
+    input: UpsertSubscriptionEntitlementSnapshotInput
+  ): Promise<SubscriptionEntitlementSnapshot> {
     const observedAt = new Date(input.observedAt);
-    const [row] = await this.db
+    const [row] = await db
       .insert(subscriptionEntitlementSnapshots)
       .values({
         authUid: input.authUid,
@@ -77,7 +100,7 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
       return mapSnapshot(row);
     }
 
-    const latest = await this.findLatestForAuthUid(input.authUid);
+    const latest = await this.findLatestForAuthUidWithDb(db, input.authUid);
     if (!latest) {
       throw new Error('subscription_entitlement_snapshot_missing_after_conflict');
     }
@@ -86,7 +109,14 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
   }
 
   async findLatestForAuthUid(authUid: string): Promise<SubscriptionEntitlementSnapshot | null> {
-    const [row] = await this.db
+    return this.findLatestForAuthUidWithDb(this.db, authUid);
+  }
+
+  private async findLatestForAuthUidWithDb(
+    db: TransactionDb,
+    authUid: string
+  ): Promise<SubscriptionEntitlementSnapshot | null> {
+    const [row] = await db
       .select()
       .from(subscriptionEntitlementSnapshots)
       .where(eq(subscriptionEntitlementSnapshots.authUid, authUid))
