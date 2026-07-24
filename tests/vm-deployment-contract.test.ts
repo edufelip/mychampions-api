@@ -96,6 +96,10 @@ describe('VM deployment contract', () => {
     expect(deploy).toContain('REVENUECAT_SECRET_API_KEY');
     expect(deploy).toContain('REVENUECAT_WEBHOOK_AUTHORIZATION');
     expect(deploy).toContain('REVENUECAT_WEBHOOK_SIGNING_SECRET');
+    expect(deploy).toContain('read_configured_env_value');
+    expect(deploy).toContain('revenuecat_runtime_value="$(read_configured_env_value');
+    expect(deploy).toContain('[[ -z "$revenuecat_runtime_value" ]]');
+    expect(deploy).not.toContain('grep -q "^${revenuecat_runtime_key}=."');
     expect(deploy).toContain('server-only sk_* key before production cutover');
     expect(nginx).toContain('127.0.0.1');
     expect(nginx).toContain('$mychampions_server_upstream');

@@ -119,7 +119,7 @@ export class RefreshSessionService {
 
   async rotate(
     refreshToken: string,
-    currentIdentity?: Pick<AuthClaims, 'email' | 'displayName'>
+    currentIdentity?: Pick<AuthClaims, 'email' | 'displayName' | 'emailVerified'>
   ): Promise<{ refreshToken: string; claims: AuthClaims }> {
     const claims = await this.verifyRefreshClaims(refreshToken);
     const replacementClaims = currentIdentity
@@ -127,6 +127,7 @@ export class RefreshSessionService {
           ...claims,
           email: currentIdentity.email,
           displayName: currentIdentity.displayName,
+          emailVerified: currentIdentity.emailVerified,
         }
       : claims;
     const replacement = await this.createRefreshSession(replacementClaims);

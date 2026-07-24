@@ -323,6 +323,7 @@ describe('web auth sessions and CORS', () => {
 
     expect(refresh.status).toBe(200);
     await expect(refresh.json()).resolves.toMatchObject({
+      emailVerified: false,
       profile: {
         emailNormalized: 'current@example.test',
         displayName: 'Current User',

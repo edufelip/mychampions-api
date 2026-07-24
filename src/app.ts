@@ -1309,17 +1309,20 @@ export function createApp(deps: CreateAppDeps = {}) {
     }
 
     const authProviderId = claims.authProviderId ?? 'email_password';
+    const currentEmailVerified =
+      normalizeEmail(claims.email) === profile.emailNormalized && claims.emailVerified;
     const accessToken = await tokenService.issue({
       sub: claims.sub,
       email: profile.emailNormalized,
       displayName: profile.displayName,
-      emailVerified: claims.emailVerified,
+      emailVerified: currentEmailVerified,
     });
     let refreshSession;
     try {
       refreshSession = await refreshSessionService.rotate(refreshToken, {
         email: profile.emailNormalized,
         displayName: profile.displayName,
+        emailVerified: currentEmailVerified,
       });
     } catch (error) {
       if (!(error instanceof InvalidRefreshTokenError)) {
@@ -1346,7 +1349,7 @@ export function createApp(deps: CreateAppDeps = {}) {
       tokenType: 'Bearer',
       expiresAt,
       authProviderIds: [authProviderId],
-      emailVerified: claims.emailVerified,
+      emailVerified: currentEmailVerified,
       profile,
     };
   }
