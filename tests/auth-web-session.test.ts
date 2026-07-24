@@ -48,9 +48,10 @@ function makeApp(
     production?: boolean;
     refreshRevokeFails?: boolean;
     profileRepository?: ProfileRepository;
+    allowedOrigin?: string;
   } = {}
 ) {
-  const config = readConfig({ WEB_ALLOWED_ORIGINS: ALLOWED_ORIGIN });
+  const config = readConfig({ WEB_ALLOWED_ORIGINS: options.allowedOrigin ?? ALLOWED_ORIGIN });
   const refreshTokenService = createTokenService({
     issuer: config.jwtIssuer,
     audience: config.jwtAudience,
@@ -103,11 +104,14 @@ function cookiePair(response: Response, name: string): string {
   return matching.split(';')[0];
 }
 
-async function signInCookieMode(app: ReturnType<typeof makeApp>) {
+async function signInCookieMode(
+  app: ReturnType<typeof makeApp>,
+  origin: string = ALLOWED_ORIGIN
+) {
   return app.handle(
     new Request('http://server.test/auth/email/sign-in', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: ALLOWED_ORIGIN },
+      headers: { 'content-type': 'application/json', origin },
       body: JSON.stringify({
         email: 'web@example.test',
         password: 'Password1!',
@@ -194,7 +198,7 @@ describe('web auth sessions and CORS', () => {
     expect(setCookies(response).join('\n')).not.toContain('mychampions_access_token=');
   });
 
-  it('marks refresh cookies Secure in production configuration', async () => {
+  it('uses Secure SameSite=None for an explicitly allowed cross-origin production website', async () => {
     const response = await signInCookieMode(makeApp({ production: true }));
     const refreshCookie = setCookies(response).find((value) =>
       value.startsWith('mychampions_refresh_token=')
@@ -203,6 +207,47 @@ describe('web auth sessions and CORS', () => {
     expect(response.status).toBe(201);
     expect(refreshCookie).toContain('Secure');
     expect(refreshCookie).toContain('HttpOnly');
+    expect(refreshCookie).toContain('SameSite=None');
+  });
+
+  it('retains SameSite=Lax for same-origin production sessions', async () => {
+    const sameOrigin = 'http://server.test';
+    const response = await signInCookieMode(
+      makeApp({ production: true, allowedOrigin: sameOrigin }),
+      sameOrigin
+    );
+    const refreshCookie = setCookies(response).find((value) =>
+      value.startsWith('mychampions_refresh_token=')
+    );
+
+    expect(response.status).toBe(201);
+    expect(refreshCookie).toContain('Secure');
+    expect(refreshCookie).toContain('SameSite=Lax');
+    expect(refreshCookie).not.toContain('SameSite=None');
+  });
+
+  it('preserves Secure SameSite=None while rotating a cross-origin production session', async () => {
+    const app = makeApp({ production: true });
+    const signInResponse = await signInCookieMode(app);
+    const originalCookie = cookiePair(signInResponse, 'mychampions_refresh_token');
+    const refreshResponse = await app.handle(
+      new Request('http://server.test/auth/session/refresh', {
+        method: 'POST',
+        headers: {
+          cookie: originalCookie,
+          'content-type': 'application/json',
+          origin: ALLOWED_ORIGIN,
+        },
+        body: JSON.stringify({ sessionMode: 'cookie' }),
+      })
+    );
+    const rotatedCookie = setCookies(refreshResponse).find((value) =>
+      value.startsWith('mychampions_refresh_token=')
+    );
+
+    expect(refreshResponse.status).toBe(200);
+    expect(rotatedCookie).toContain('Secure');
+    expect(rotatedCookie).toContain('SameSite=None');
   });
 
   it('rotates cookie refresh sessions and rejects replay', async () => {

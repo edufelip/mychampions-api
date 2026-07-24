@@ -369,22 +369,26 @@ function localAccessTokenCookieOptions(accessToken: string, secure: boolean) {
   };
 }
 
-function webRefreshTokenCookieOptions(refreshToken: string, secure: boolean) {
+function webRefreshTokenCookieOptions(
+  refreshToken: string,
+  secure: boolean,
+  crossOrigin: boolean
+) {
   return {
     value: refreshToken,
     httpOnly: true,
-    sameSite: 'lax' as const,
+    sameSite: secure && crossOrigin ? ('none' as const) : ('lax' as const),
     path: '/auth/session',
     maxAge: LOCAL_REFRESH_TOKEN_EXPIRES_IN_SECONDS,
     secure,
   };
 }
 
-function clearedCookieOptions(path: string, secure: boolean) {
+function clearedCookieOptions(path: string, secure: boolean, crossOrigin = false) {
   return {
     value: '',
     httpOnly: true,
-    sameSite: 'lax' as const,
+    sameSite: secure && crossOrigin ? ('none' as const) : ('lax' as const),
     path,
     maxAge: 0,
     expires: new Date(0),
@@ -404,11 +408,27 @@ function resolveSessionModeForRequest(
   return requestedMode ?? 'bearer';
 }
 
+function isAllowedCrossOriginRequest(request: Request, allowedWebOrigins: string[]): boolean {
+  const origin = request.headers.get('origin');
+  if (!origin || !allowedWebOrigins.includes(origin)) return false;
+
+  try {
+    return new URL(origin).origin !== new URL(request.url).origin;
+  } catch {
+    return false;
+  }
+}
+
 type AuthCookieJar = Record<
   string,
   {
     value?: unknown;
-    set: (options: ReturnType<typeof localAccessTokenCookieOptions>) => void;
+    set: (
+      options:
+        | ReturnType<typeof localAccessTokenCookieOptions>
+        | ReturnType<typeof webRefreshTokenCookieOptions>
+        | ReturnType<typeof clearedCookieOptions>
+    ) => void;
   }
 >;
 
@@ -1219,7 +1239,8 @@ export function createApp(deps: CreateAppDeps = {}) {
     authProviderId: 'email_password' | 'google' | 'apple',
     cookie: AuthCookieJar,
     set: { status?: number | string },
-    sessionMode: SessionMode = 'bearer'
+    sessionMode: SessionMode = 'bearer',
+    crossOrigin = false
   ) {
     const emailNormalized = normalizeEmail(identity.email);
     const profile = await profileRepository.upsertFromSession({
@@ -1244,7 +1265,9 @@ export function createApp(deps: CreateAppDeps = {}) {
 
     set.status = 201;
     if (sessionMode === 'cookie') {
-      cookie[WEB_REFRESH_TOKEN_COOKIE].set(webRefreshTokenCookieOptions(refreshToken, config.production));
+      cookie[WEB_REFRESH_TOKEN_COOKIE].set(
+        webRefreshTokenCookieOptions(refreshToken, config.production, crossOrigin)
+      );
     } else {
       cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(
         localAccessTokenCookieOptions(accessToken, config.production)
@@ -1265,7 +1288,8 @@ export function createApp(deps: CreateAppDeps = {}) {
     refreshToken: string,
     sessionMode: SessionMode,
     cookie: AuthCookieJar,
-    set: { status?: number | string }
+    set: { status?: number | string },
+    crossOrigin = false
   ) {
     let claims;
     try {
@@ -1309,7 +1333,7 @@ export function createApp(deps: CreateAppDeps = {}) {
 
     if (sessionMode === 'cookie') {
       cookie[WEB_REFRESH_TOKEN_COOKIE].set(
-        webRefreshTokenCookieOptions(nextRefreshToken, config.production)
+        webRefreshTokenCookieOptions(nextRefreshToken, config.production, crossOrigin)
       );
     } else {
       cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(
@@ -1402,7 +1426,11 @@ export function createApp(deps: CreateAppDeps = {}) {
         set.status = 201;
         if (sessionMode === 'cookie') {
           cookie[WEB_REFRESH_TOKEN_COOKIE].set(
-            webRefreshTokenCookieOptions(refreshToken, config.production)
+            webRefreshTokenCookieOptions(
+              refreshToken,
+              config.production,
+              isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
+            )
           );
         } else {
           cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(
@@ -1422,7 +1450,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .post(
       '/auth/dev/refresh',
-      async ({ body, cookie, set }) => {
+      async ({ body, cookie, request, set }) => {
         if (!config.localDevAuthEnabled) {
           set.status = 404;
           return { error: { code: 'local_dev_auth_disabled' } };
@@ -1433,7 +1461,7 @@ export function createApp(deps: CreateAppDeps = {}) {
           return validationError(set);
         }
 
-        return refreshAuthSession(parsedBody.refreshToken, 'bearer', cookie, set);
+        return refreshAuthSession(parsedBody.refreshToken, 'bearer', cookie, set, false);
       }
     )
     .post(
@@ -1455,7 +1483,13 @@ export function createApp(deps: CreateAppDeps = {}) {
           set.status = 401;
           return { error: { code: 'invalid_refresh_token' } };
         }
-        return refreshAuthSession(refreshToken, sessionMode, cookie, set);
+        return refreshAuthSession(
+          refreshToken,
+          sessionMode,
+          cookie,
+          set,
+          isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
+        );
       },
       {
         body: t.Optional(
@@ -1468,7 +1502,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .post(
       '/auth/session/sign-out',
-      async ({ body, cookie, set }) => {
+      async ({ body, cookie, request, set }) => {
         const cookieRefreshToken = cookie[WEB_REFRESH_TOKEN_COOKIE].value;
         const refreshToken =
           typeof cookieRefreshToken === 'string' ? cookieRefreshToken : body?.refreshToken;
@@ -1480,9 +1514,10 @@ export function createApp(deps: CreateAppDeps = {}) {
             revokeFailed = true;
           }
         }
+        const crossOrigin = isAllowedCrossOriginRequest(request, config.allowedWebOrigins);
         cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(clearedCookieOptions('/', config.production));
         cookie[WEB_REFRESH_TOKEN_COOKIE].set(
-          clearedCookieOptions('/auth/session', config.production)
+          clearedCookieOptions('/auth/session', config.production, crossOrigin)
         );
         if (revokeFailed) {
           set.status = 503;
@@ -1522,7 +1557,8 @@ export function createApp(deps: CreateAppDeps = {}) {
             'email_password',
             cookie,
             set,
-            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins)
+            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins),
+            isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
           );
         } catch (error) {
           return emailAuthGatewayErrorResponse(error, set);
@@ -1561,7 +1597,8 @@ export function createApp(deps: CreateAppDeps = {}) {
             'email_password',
             cookie,
             set,
-            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins)
+            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins),
+            isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
           );
         } catch (error) {
           return emailAuthGatewayErrorResponse(error, set);
@@ -1592,7 +1629,8 @@ export function createApp(deps: CreateAppDeps = {}) {
             identity.provider,
             cookie,
             set,
-            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins)
+            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins),
+            isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
           );
         } catch (error) {
           return socialAuthGatewayErrorResponse(error, set);
@@ -1700,6 +1738,8 @@ export function createApp(deps: CreateAppDeps = {}) {
       }
 
       if (config.production && !config.revenueCatWebhookSigningSecret) {
+        // RevenueCat emits this header natively when HMAC signing is enabled:
+        // https://www.revenuecat.com/docs/integrations/webhooks#webhook-signature-verification-hmac
         set.status = 503;
         return {
           error: {
