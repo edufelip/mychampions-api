@@ -1265,6 +1265,7 @@ export function createApp(deps: CreateAppDeps = {}) {
 
     set.status = 201;
     if (sessionMode === 'cookie') {
+      cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(clearedCookieOptions('/', config.production));
       cookie[WEB_REFRESH_TOKEN_COOKIE].set(
         webRefreshTokenCookieOptions(refreshToken, config.production, crossOrigin)
       );
@@ -1335,6 +1336,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     const expiresAt = new Date(Date.now() + LOCAL_ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000).toISOString();
 
     if (sessionMode === 'cookie') {
+      cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(clearedCookieOptions('/', config.production));
       cookie[WEB_REFRESH_TOKEN_COOKIE].set(
         webRefreshTokenCookieOptions(nextRefreshToken, config.production, crossOrigin)
       );
@@ -1428,6 +1430,7 @@ export function createApp(deps: CreateAppDeps = {}) {
 
         set.status = 201;
         if (sessionMode === 'cookie') {
+          cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(clearedCookieOptions('/', config.production));
           cookie[WEB_REFRESH_TOKEN_COOKIE].set(
             webRefreshTokenCookieOptions(
               refreshToken,

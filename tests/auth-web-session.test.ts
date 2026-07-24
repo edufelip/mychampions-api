@@ -173,8 +173,10 @@ describe('web auth sessions and CORS', () => {
     expect(refreshCookie).toContain('SameSite=Lax');
     expect(refreshCookie).toContain('Path=/auth/session');
     expect(refreshCookie).toContain('Max-Age=2592000');
-    expect(setCookies(response).some((value) => value.startsWith('mychampions_access_token='))).toBe(
-      false
+    expect(
+      setCookies(response).find((value) => value.startsWith('mychampions_access_token='))
+    ).toContain(
+      'Max-Age=0'
     );
   });
 
@@ -195,7 +197,9 @@ describe('web auth sessions and CORS', () => {
     expect(response.status).toBe(201);
     expect(session.refreshToken).toBeUndefined();
     expect(setCookies(response).join('\n')).toContain('mychampions_refresh_token=');
-    expect(setCookies(response).join('\n')).not.toContain('mychampions_access_token=');
+    expect(
+      setCookies(response).find((value) => value.startsWith('mychampions_access_token='))
+    ).toContain('Max-Age=0');
   });
 
   it('uses Secure SameSite=None for an explicitly allowed cross-origin production website', async () => {
@@ -248,6 +252,9 @@ describe('web auth sessions and CORS', () => {
     expect(refreshResponse.status).toBe(200);
     expect(rotatedCookie).toContain('Secure');
     expect(rotatedCookie).toContain('SameSite=None');
+    expect(
+      setCookies(refreshResponse).find((value) => value.startsWith('mychampions_access_token='))
+    ).toContain('Max-Age=0');
   });
 
   it('rotates cookie refresh sessions and rejects replay', async () => {
