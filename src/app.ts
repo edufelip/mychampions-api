@@ -1513,16 +1513,17 @@ export function createApp(deps: CreateAppDeps = {}) {
       '/auth/session/sign-out',
       async ({ body, cookie, request, set }) => {
         const cookieRefreshToken = cookie[WEB_REFRESH_TOKEN_COOKIE].value;
-        const refreshToken =
-          typeof cookieRefreshToken === 'string' ? cookieRefreshToken : body?.refreshToken;
-        let revokeFailed = false;
-        if (refreshToken) {
-          try {
-            await refreshSessionService.revoke(refreshToken);
-          } catch {
-            revokeFailed = true;
-          }
+        const refreshTokens = new Set<string>();
+        if (typeof cookieRefreshToken === 'string') {
+          refreshTokens.add(cookieRefreshToken);
         }
+        if (typeof body?.refreshToken === 'string') {
+          refreshTokens.add(body.refreshToken);
+        }
+        const revokeResults = await Promise.allSettled(
+          [...refreshTokens].map((refreshToken) => refreshSessionService.revoke(refreshToken))
+        );
+        const revokeFailed = revokeResults.some((result) => result.status === 'rejected');
         const crossOrigin = isAllowedCrossOriginRequest(request, config.allowedWebOrigins);
         cookie[LOCAL_ACCESS_TOKEN_COOKIE].set(clearedCookieOptions('/', config.production));
         cookie[WEB_REFRESH_TOKEN_COOKIE].set(

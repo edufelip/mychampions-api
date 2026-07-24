@@ -400,6 +400,63 @@ describe('web auth sessions and CORS', () => {
     expect(refresh.status).toBe(401);
   });
 
+  it('revokes distinct cookie and body refresh sessions presented together on sign-out', async () => {
+    const app = makeApp();
+    const cookieSignIn = await signInCookieMode(app);
+    const refreshCookie = cookiePair(cookieSignIn, 'mychampions_refresh_token');
+    const cookieRefreshToken = refreshCookie.slice(refreshCookie.indexOf('=') + 1);
+    const bearerSignIn = await app.handle(
+      new Request('http://server.test/auth/email/sign-in', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'web@example.test', password: 'Password1!' }),
+      })
+    );
+    const bearerSession = await bearerSignIn.json();
+    expect(bearerSession.refreshToken).toBeString();
+    expect(bearerSession.refreshToken).not.toBe(cookieRefreshToken);
+
+    const signOut = await app.handle(
+      new Request('http://server.test/auth/session/sign-out', {
+        method: 'POST',
+        headers: {
+          cookie: refreshCookie,
+          'content-type': 'application/json',
+          origin: ALLOWED_ORIGIN,
+        },
+        body: JSON.stringify({ refreshToken: bearerSession.refreshToken }),
+      })
+    );
+    expect(signOut.status).toBe(204);
+
+    const [cookieRefresh, bearerRefresh] = await Promise.all([
+      app.handle(
+        new Request('http://server.test/auth/session/refresh', {
+          method: 'POST',
+          headers: {
+            cookie: refreshCookie,
+            'content-type': 'application/json',
+            origin: ALLOWED_ORIGIN,
+          },
+          body: JSON.stringify({ sessionMode: 'cookie' }),
+        })
+      ),
+      app.handle(
+        new Request('http://server.test/auth/session/refresh', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            refreshToken: bearerSession.refreshToken,
+            sessionMode: 'bearer',
+          }),
+        })
+      ),
+    ]);
+
+    expect(cookieRefresh.status).toBe(401);
+    expect(bearerRefresh.status).toBe(401);
+  });
+
   it('still clears browser cookies when durable refresh-session revocation fails', async () => {
     const app = makeApp({ refreshRevokeFails: true });
     const signInResponse = await signInCookieMode(app);
