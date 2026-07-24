@@ -1787,8 +1787,24 @@ export function createApp(deps: CreateAppDeps = {}) {
       }
 
       const payload = parseRevenueCatWebhookPayload(rawBody);
-      const appUserIds = payload ? revenueCatWebhookAppUserIds(payload.event) : [];
-      if (!payload || appUserIds.length === 0) {
+      if (!payload) {
+        set.status = 400;
+        return {
+          error: {
+            code: 'invalid_revenuecat_webhook_payload',
+            message:
+              'RevenueCat webhook requires event.app_user_id or transfer customer identifiers.',
+          },
+        };
+      }
+
+      if (payload.event.type === 'TEST') {
+        set.status = 200;
+        return { status: 'accepted', reconciledCustomers: 0 };
+      }
+
+      const appUserIds = revenueCatWebhookAppUserIds(payload.event);
+      if (appUserIds.length === 0) {
         set.status = 400;
         return {
           error: {

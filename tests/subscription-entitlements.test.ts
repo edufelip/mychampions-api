@@ -521,6 +521,44 @@ describe('subscription entitlement snapshot API', () => {
     expect(subscriptions.saved).toEqual([]);
   });
 
+  it('acknowledges an authenticated RevenueCat dashboard TEST without reconciling synthetic customer data', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    delete process.env.REVENUECAT_SECRET_API_KEY;
+    const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          event: {
+            id: 'dashboard-test-event',
+            type: 'TEST',
+            app_user_id: 'synthetic-dashboard-customer',
+          },
+          api_version: '1.0',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: 'accepted',
+      reconciledCustomers: 0,
+    });
+    expect(customers.requestedAppUserIds).toEqual([]);
+    expect(subscriptions.saved).toEqual([]);
+  });
+
   it('stores a RevenueCat webhook entitlement snapshot for the event app user id', async () => {
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
     delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
