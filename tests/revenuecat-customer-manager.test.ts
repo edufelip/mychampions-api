@@ -198,6 +198,30 @@ describe('mapRevenueCatCustomerPrivileges', () => {
     expect(privileges.aiEntitlementStatus).toBe('lapsed');
   });
 
+  it('bounds negative and implausibly future provider observation timestamps', () => {
+    const negative = mapRevenueCatCustomerPrivileges(
+      {
+        request_date_ms: -1,
+        request_date: '2026-07-21T11:59:30.000Z',
+        subscriber: { entitlements: {}, subscriptions: {} },
+      },
+      'user-1',
+      NOW
+    );
+    const farFuture = mapRevenueCatCustomerPrivileges(
+      {
+        request_date_ms: 8e15,
+        request_date: '2500-01-01T00:00:00.000Z',
+        subscriber: { entitlements: {}, subscriptions: {} },
+      },
+      'user-1',
+      NOW
+    );
+
+    expect(negative.observedAt).toBe('2026-07-21T11:59:30.000Z');
+    expect(farFuture.observedAt).toBe(NOW.toISOString());
+  });
+
   it('rejects a malformed customer response instead of inventing privileges', () => {
     expect(() => mapRevenueCatCustomerPrivileges({}, 'user-1', NOW)).toThrow(
       RevenueCatCustomerManagerError
@@ -356,6 +380,28 @@ describe('RevenueCatRestCustomerManager', () => {
 
     await expect(manager.getCustomerPrivileges('user-1')).rejects.toMatchObject({
       code: 'invalid_response',
+    });
+  });
+
+  it('times out stalled customer fetches and response body reads', async () => {
+    const stalledFetch = new RevenueCatRestCustomerManager('sk_test_secret', {
+      timeoutMs: 5,
+      fetchFn: async () => new Promise<Response>(() => {}),
+    });
+    const stalledBody = new RevenueCatRestCustomerManager('sk_test_secret', {
+      timeoutMs: 5,
+      fetchFn: async () =>
+        ({
+          ok: true,
+          json: async () => new Promise<unknown>(() => {}),
+        }) as Response,
+    });
+
+    await expect(stalledFetch.getCustomerPrivileges('user-1')).rejects.toMatchObject({
+      code: 'network',
+    });
+    await expect(stalledBody.getCustomerPrivileges('user-1')).rejects.toMatchObject({
+      code: 'network',
     });
   });
 });

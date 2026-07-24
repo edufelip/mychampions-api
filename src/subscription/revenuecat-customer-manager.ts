@@ -57,7 +57,11 @@ type RevenueCatRestCustomerManagerDeps = {
   apiBaseUrl?: string;
   fetchFn?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   now?: () => Date;
+  timeoutMs?: number;
 };
+
+const MAX_PROVIDER_OBSERVATION_SKEW_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_CUSTOMER_LOOKUP_TIMEOUT_MS = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -152,13 +156,17 @@ function readCanonicalSubscriberCollections(subscriber: Record<string, unknown>)
 }
 
 function readObservedDate(customer: RawRevenueCatCustomer, now: Date): Date {
+  const isWithinTrustedWindow = (candidate: Date) =>
+    Number.isFinite(candidate.getTime()) &&
+    Math.abs(candidate.getTime() - now.getTime()) <= MAX_PROVIDER_OBSERVATION_SKEW_MS;
+
   if (typeof customer.request_date_ms === 'number' && Number.isFinite(customer.request_date_ms)) {
     const requestDateMs = new Date(customer.request_date_ms);
-    if (Number.isFinite(requestDateMs.getTime())) return requestDateMs;
+    if (isWithinTrustedWindow(requestDateMs)) return requestDateMs;
   }
 
   const requestDate = parseDate(customer.request_date);
-  return requestDate ?? now;
+  return requestDate && isWithinTrustedWindow(requestDate) ? requestDate : now;
 }
 
 function readEntitlement(
@@ -264,6 +272,7 @@ export class RevenueCatRestCustomerManager implements RevenueCatCustomerManager 
   private readonly apiBaseUrl: string;
   private readonly fetchFn: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   private readonly now: () => Date;
+  private readonly timeoutMs: number;
 
   constructor(
     private readonly secretApiKey: string,
@@ -272,6 +281,10 @@ export class RevenueCatRestCustomerManager implements RevenueCatCustomerManager 
     this.apiBaseUrl = (deps.apiBaseUrl ?? 'https://api.revenuecat.com/v1').replace(/\/+$/, '');
     this.fetchFn = deps.fetchFn ?? fetch;
     this.now = deps.now ?? (() => new Date());
+    this.timeoutMs =
+      typeof deps.timeoutMs === 'number' && deps.timeoutMs > 0
+        ? deps.timeoutMs
+        : DEFAULT_CUSTOMER_LOOKUP_TIMEOUT_MS;
   }
 
   async getCustomerPrivileges(appUserId: string): Promise<RevenueCatCustomerPrivileges> {
@@ -289,16 +302,50 @@ export class RevenueCatRestCustomerManager implements RevenueCatCustomerManager 
       );
     }
 
+    const abortController = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        abortController.abort();
+        reject(
+          new RevenueCatCustomerManagerError(
+            'network',
+            'RevenueCat customer lookup exceeded its deadline.'
+          )
+        );
+      }, this.timeoutMs);
+    });
+
+    try {
+      return await Promise.race(
+        [
+          this.fetchCustomerPrivileges(
+            normalizedAppUserId,
+            abortController.signal
+          ),
+          deadline,
+        ]
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  private async fetchCustomerPrivileges(
+    appUserId: string,
+    signal: AbortSignal
+  ): Promise<RevenueCatCustomerPrivileges> {
     let response: Response;
     try {
       response = await this.fetchFn(
-        `${this.apiBaseUrl}/subscribers/${encodeURIComponent(normalizedAppUserId)}`,
+        `${this.apiBaseUrl}/subscribers/${encodeURIComponent(appUserId)}`,
         {
           method: 'GET',
           headers: {
             authorization: `Bearer ${this.secretApiKey.trim()}`,
             accept: 'application/json',
           },
+          signal,
         }
       );
     } catch (error) {
@@ -307,7 +354,6 @@ export class RevenueCatRestCustomerManager implements RevenueCatCustomerManager 
         `RevenueCat customer lookup failed: ${String(error)}`
       );
     }
-
     if (!response.ok) {
       throw new RevenueCatCustomerManagerError(
         'upstream',
@@ -318,13 +364,19 @@ export class RevenueCatRestCustomerManager implements RevenueCatCustomerManager 
     let body: unknown;
     try {
       body = await response.json();
-    } catch {
+    } catch (error) {
+      if (signal.aborted) {
+        throw new RevenueCatCustomerManagerError(
+          'network',
+          'RevenueCat customer response exceeded its deadline.'
+        );
+      }
       throw new RevenueCatCustomerManagerError(
         'invalid_response',
         'RevenueCat customer lookup returned invalid JSON.'
       );
     }
 
-    return mapRevenueCatCustomerPrivileges(body, normalizedAppUserId, this.now());
+    return mapRevenueCatCustomerPrivileges(body, appUserId, this.now());
   }
 }
