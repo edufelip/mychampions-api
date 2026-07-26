@@ -56,6 +56,9 @@ describe('VM deployment contract', () => {
     expect(provision).toContain('ALTER DEFAULT PRIVILEGES');
     expect(provision).toContain('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
     expect(provision).toContain('GRANT USAGE, CREATE ON SCHEMA public TO "$server_role"');
+    expect(provision).toContain('REVENUECAT_SECRET_API_KEY=');
+    expect(provision).toContain('REVENUECAT_WEBHOOK_AUTHORIZATION=');
+    expect(provision).toContain('REVENUECAT_WEBHOOK_SIGNING_SECRET=');
     expect(provision).toContain('--apply');
     expect(provision).toContain('psql_admin_query()');
     expect(provision).toContain('psql_admin_stdin()');
@@ -90,6 +93,14 @@ describe('VM deployment contract', () => {
     expect(deploy).not.toContain('IMAGE_REPOSITORY:-ghcr.io/edufelip/mychampions-server');
     expect(deploy).toContain("docker inspect --format '{{.State.Running}}' mychampions-server-blue");
     expect(deploy).toContain('Exactly one MyChampions server slot must be running before cutover.');
+    expect(deploy).toContain('REVENUECAT_SECRET_API_KEY');
+    expect(deploy).toContain('REVENUECAT_WEBHOOK_AUTHORIZATION');
+    expect(deploy).toContain('REVENUECAT_WEBHOOK_SIGNING_SECRET');
+    expect(deploy).toContain('read_configured_env_value');
+    expect(deploy).toContain('revenuecat_runtime_value="$(read_configured_env_value');
+    expect(deploy).toContain('[[ -z "$revenuecat_runtime_value" ]]');
+    expect(deploy).not.toContain('grep -q "^${revenuecat_runtime_key}=."');
+    expect(deploy).toContain('server-only sk_* key before production cutover');
     expect(nginx).toContain('127.0.0.1');
     expect(nginx).toContain('$mychampions_server_upstream');
     expect(nginx).toContain('/health');
@@ -126,6 +137,57 @@ describe('VM deployment contract', () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('Missing deployment prerequisite');
+  });
+
+  it('keeps live RevenueCat evidence verification read-only and constrained to the production VM', async () => {
+    const evidenceScript = await readFile(
+      join(serverRoot, 'infra', 'scripts', 'verify-revenuecat-live-evidence.sh'),
+      'utf8'
+    );
+    const dryRun = await runScript('infra/scripts/verify-revenuecat-live-evidence.sh', {
+      env: {
+        REVENUECAT_TEST_APP_USER_ID: 'rc-live-contract-test',
+        EXPECTED_PROFESSIONAL_STATUS: 'active',
+        EXPECTED_AI_STATUS: 'lapsed',
+      },
+    });
+    const unsafeHost = await runScript('infra/scripts/verify-revenuecat-live-evidence.sh', {
+      args: ['--verify'],
+      env: {
+        MYCHAMPIONS_VM_SSH_HOST: 'unsafe-host',
+        REVENUECAT_TEST_APP_USER_ID: 'rc-live-contract-test',
+        EXPECTED_PROFESSIONAL_STATUS: 'active',
+        EXPECTED_AI_STATUS: 'lapsed',
+      },
+    });
+
+    expect(dryRun.exitCode).toBe(0);
+    expect(dryRun.stdout).toContain('Dry run only. No SSH, provider read, or database read was performed.');
+    expect(dryRun.stdout).toContain('rc-live-contract-test');
+    expect(unsafeHost.exitCode).toBe(2);
+    expect(unsafeHost.stderr).toContain('MYCHAMPIONS_VM_SSH_HOST must be digiocean');
+    expect(evidenceScript).toContain('select');
+    expect(evidenceScript).toContain('subscription_entitlement_snapshots');
+    expect(evidenceScript).toContain('RevenueCatRestCustomerManager');
+    expect(evidenceScript).not.toMatch(/\b(insert|update|delete|truncate|drop)\b/i);
+
+    const timeoutLoopIndex = evidenceScript.indexOf('while (Date.now() <= deadline)');
+    const providerRefreshIndex = evidenceScript.indexOf(
+      'privileges = await customerManager.getCustomerPrivileges(appUserId)',
+      timeoutLoopIndex
+    );
+    const snapshotRefreshIndex = evidenceScript.indexOf(
+      'from subscription_entitlement_snapshots',
+      timeoutLoopIndex
+    );
+    const combinedConvergenceIndex = evidenceScript.indexOf(
+      'if (providerMatches && snapshotMatches)',
+      timeoutLoopIndex
+    );
+    expect(timeoutLoopIndex).toBeGreaterThan(-1);
+    expect(providerRefreshIndex).toBeGreaterThan(timeoutLoopIndex);
+    expect(snapshotRefreshIndex).toBeGreaterThan(providerRefreshIndex);
+    expect(combinedConvergenceIndex).toBeGreaterThan(snapshotRefreshIndex);
   });
 
   it('has a guarded bootstrap path for first public ingress without replacing a healthy slot', async () => {

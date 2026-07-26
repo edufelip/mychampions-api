@@ -9,13 +9,16 @@
   },
   "scripts": {
     "dev": "bun --watch src/index.ts",
+    "dev:web-e2e": "bun scripts/web-e2e-server.ts",
     "start": "bun src/index.ts",
     "test": "bun test",
+    "evidence:revenuecat-live": "bash infra/scripts/verify-revenuecat-live-evidence.sh",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
     "@elysiajs/bearer": "~1.4.0",
+    "@elysiajs/cors": "~1.4.0",
     "@elysiajs/jwt": "~1.4.0",
     "@google-cloud/storage": "^7.21.0",
     "@sinclair/typebox": "~0.34.41",

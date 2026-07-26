@@ -1,5 +1,11 @@
 # MyChampions Server
 
+## Browser session boundary
+
+Web clients may opt into `sessionMode: cookie` on email/social sign-in. The response keeps the access token in application memory, explicitly expires any legacy access-token cookie, and sets a rotating HttpOnly refresh cookie. Production requests from an explicitly allowlisted website on a different origin receive `Secure; SameSite=None`; same-origin and local-development sessions retain `SameSite=Lax`. `POST /auth/session/refresh` rotates that cookie, expires any legacy access-token cookie again, and rejects replay. Refresh reads the current profile identity, but preserves `emailVerified` only while the current email still matches the email bound to the verified session. `POST /auth/session/sign-out` attempts to revoke every distinct refresh token presented through the cookie and request body before expiring auth cookies, so a stale hybrid-client cookie cannot leave an explicit native session active. Native clients continue using response-body bearer refresh tokens.
+
+Credentialed browser access is restricted to exact comma-separated `WEB_ALLOWED_ORIGINS`. Development defaults to `http://localhost:8081,http://127.0.0.1:8081`; production defaults to an empty list. This repository contains no website deployment or infrastructure activation.
+
 Local-first backend for MyChampions mobile app-domain logic.
 
 ## Stack
@@ -65,9 +71,15 @@ APPLE_CLIENT_ID=
 APPLE_WEB_CLIENT_ID=
 AUTH_JWT_PRIVATE_JWK=
 MEAL_PHOTO_ANALYZER=unconfigured
+REVENUECAT_SECRET_API_KEY=
 REVENUECAT_WEBHOOK_AUTHORIZATION=
 REVENUECAT_WEBHOOK_SIGNING_SECRET=
 ```
+
+`REVENUECAT_SECRET_API_KEY` must be a server-only `sk_*` key. The webhook handler
+uses it to read canonical customer state from `GET /v1/subscribers/:app_user_id`
+after an authenticated webhook instead of deriving all privileges from one
+product-scoped event. Never expose this key through Expo config or a client env.
 
 Local email/password auth is enabled by default and stores Argon2id credentials
 in the local Postgres `local_email_auth_credentials` table. Password-reset
@@ -156,7 +168,9 @@ After those preflights, the deployment script pulls the pinned image, runs
 Drizzle migrations, starts the inactive loopback slot, checks `/health`, tests
 Nginx, switches the upstream, and stops the old slot. It requires an explicit
 immutable image reference and refuses to cut over unless exactly one active
-slot is healthy and agrees with the persisted slot marker:
+slot is healthy and agrees with the persisted slot marker. It also refuses a
+production cutover unless the runtime env contains a server-only RevenueCat
+`sk_*` key plus nonblank webhook Authorization and HMAC values:
 
 ```bash
 PUBLIC_DOMAIN=api.mychampions.eduwaldo.com \
@@ -281,7 +295,11 @@ processes started with a non-pinned Bun runtime are caught.
 Every refresh token contains a signed session id while only its SHA-256 digest is
 stored in `auth_sessions`. `POST /auth/dev/refresh` consumes that row and writes
 a replacement row atomically, so replaying an already-consumed refresh token
-returns `401 invalid_refresh_token`.
+returns `401 invalid_refresh_token`. Refresh loads the current server-owned
+profile before rotation, issues access and replacement-token identity claims from
+that profile, and consumes the old session only after all fallible prerequisite
+work succeeds. A transient profile or token-signing failure therefore leaves the
+original refresh token retryable instead of stranding the client.
 
 Server-owned Google and Apple identities are stored in `auth_identities` by the
 provider and immutable provider subject, never by matching email. This prevents
@@ -300,9 +318,26 @@ other direct data.
 
 `POST /analytics/events` accepts unauthenticated provider-neutral mobile analytics events and stores them in local Postgres table `analytics_events`. The route is intentionally available before auth so auth-entry events can be captured, but it rejects any event properties containing sensitive keys such as email, tokens, passwords, invite codes, or secrets. The mobile analytics hook sends redacted best-effort events to this route when `EXPO_PUBLIC_MYCHAMPIONS_SERVER_URL` or Expo `extra.server.baseUrl` is configured.
 
-Outside production, `POST /subscription/entitlements/snapshot` stores the authenticated user's latest RevenueCat-derived entitlement state in local Postgres table `subscription_entitlement_snapshots`. `GET /subscription/entitlements/snapshot` returns that authenticated user's latest local snapshot or `null` when none exists. The mobile subscription hook still presents native RevenueCat paywalls and reads store-backed customer info locally, then best-effort syncs `professionalEntitlementStatus`, `aiEntitlementStatus`, optional active-student count, and observation time to the MyChampions server for local development. The server keeps only strictly newer observations, so a delayed retry cannot roll a user back to an older entitlement state. Production rejects client snapshot writes with HTTP 403; cap and AI-access enforcement there must use the signed RevenueCat webhook snapshot. When native entitlement reads are unavailable during local development, the hook can hydrate from the server-owned local snapshot so local gates can continue without remote RevenueCat credentials.
+Outside production, `POST /subscription/entitlements/snapshot` stores the authenticated user's latest RevenueCat-derived entitlement state in local Postgres table `subscription_entitlement_snapshots`. `GET /subscription/entitlements/snapshot` returns that authenticated user's latest local snapshot or `null` when none exists. The mobile subscription hook still presents native RevenueCat paywalls and reads store-backed customer info locally, then best-effort syncs `professionalEntitlementStatus`, `aiEntitlementStatus`, optional active-student count, professional entitlement expiry, renewal-risk state, and observation time to the MyChampions server for local development. The server validates expiry timestamps and keeps only strictly newer observations, so a delayed retry cannot roll a user back to an older entitlement state. Production rejects client snapshot writes with HTTP 403; cap and AI-access enforcement there must use the signed RevenueCat webhook snapshot. When native entitlement reads are unavailable during local development, the hook can hydrate from the server-owned local snapshot so local gates can continue without remote RevenueCat credentials.
 
-`POST /webhooks/revenuecat` accepts RevenueCat server-to-server webhook events and writes the latest entitlement snapshot to `subscription_entitlement_snapshots` using `event.app_user_id` as the MyChampions auth UID. The endpoint is disabled until `REVENUECAT_WEBHOOK_AUTHORIZATION` exactly matches the Authorization header configured in the RevenueCat dashboard. In production, both that authorization value and `REVENUECAT_WEBHOOK_SIGNING_SECRET` are required; the route verifies `X-RevenueCat-Webhook-Signature` HMAC deliveries over the raw JSON body before parsing. This local route does not call RevenueCat or mutate provider state; live setup still needs the RevenueCat dashboard webhook URL, app-user-ID alignment, and provider smoke verification.
+`POST /webhooks/revenuecat` accepts RevenueCat server-to-server webhook events, identifies every affected MyChampions auth UID (including both sides of `TRANSFER` events), and reconciles each customer through the server-only RevenueCat subscriber API before writing `subscription_entitlement_snapshots`. Authenticated dashboard `TEST` events are acknowledged without customer reconciliation because RevenueCat's purchase-like test payload is synthetic and is not persisted by the provider. Multi-customer transfer snapshots persist in one database transaction, so source and destination privilege changes commit or roll back together. Canonical customer lookup has a 10-second deadline covering both connection and response-body reads. Provider observation timestamps are trusted only within 24 hours of server time; out-of-window values fall back to another valid provider timestamp or server time so a malformed future date cannot freeze newer reconciliation. The canonical reconciliation reads `professional_pro` and `student_pro` independently, derives professional expiry and renewal-risk metadata from authoritative entitlement data, and prevents a partial event for one product from revoking the unrelated privilege. A successful subscriber response must contain well-formed canonical entitlement and subscription collections; incomplete collections, malformed entries, invalid product identifiers, and invalid canonical timestamps are rejected instead of being persisted as lapsed access. Provider/configuration/response failures return a retryable non-2xx response instead of acknowledging an unsynchronized event. The endpoint is disabled until `REVENUECAT_WEBHOOK_AUTHORIZATION` exactly matches the Authorization header configured in the RevenueCat dashboard and `REVENUECAT_SECRET_API_KEY` contains a server-only `sk_*` key. In production, `REVENUECAT_WEBHOOK_SIGNING_SECRET` is also required; the route verifies RevenueCat's dashboard-enabled [`X-RevenueCat-Webhook-Signature` HMAC delivery](https://www.revenuecat.com/docs/integrations/webhooks#webhook-signature-verification-hmac) over the raw JSON body before parsing. No RevenueCat secret is exposed to the mobile app. Live setup still requires the dashboard webhook URL, authorization/HMAC values, App User ID alignment, and provider smoke verification.
+
+After an approved live purchase, the following read-only verifier polls the
+canonical RevenueCat customer and the matching production snapshot without
+printing credentials or writing provider/database state:
+
+```bash
+REVENUECAT_TEST_APP_USER_ID=<unique-live-uid> \
+EXPECTED_PROFESSIONAL_STATUS=active \
+EXPECTED_AI_STATUS=lapsed \
+bun run evidence:revenuecat-live -- --verify
+```
+
+The verifier defaults to a no-SSH dry run when `--verify` is omitted, refuses
+hosts other than `digiocean`, requires exactly one running server slot, and
+refreshes both canonical provider privileges and the server snapshot inside
+the bounded timeout loop. It succeeds only when both reads match the expected
+independent privileges in the same iteration.
 
 `GET /connections` lists the authenticated user's student-side and professional-side connections from local Postgres table `connections`. The mobile client uses this endpoint for `getMyConnections()` when a local server bearer token is available.
 

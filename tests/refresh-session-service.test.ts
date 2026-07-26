@@ -20,12 +20,24 @@ describe('RefreshSessionService', () => {
       authProviderId: 'google',
     });
 
-    const rotated = await service.rotate(issued.refreshToken);
+    const verified = await service.verify(issued.refreshToken);
+    const rotated = await service.rotate(issued.refreshToken, {
+      email: 'current@example.test',
+      displayName: 'Current User',
+      emailVerified: false,
+    });
 
+    expect(verified).toMatchObject({
+      sub: 'auth-user-1',
+      email: 'user@example.test',
+      displayName: 'User',
+    });
     expect(rotated.refreshToken).not.toBe(issued.refreshToken);
     expect(rotated.claims).toMatchObject({
       sub: 'auth-user-1',
-      email: 'user@example.test',
+      email: 'current@example.test',
+      displayName: 'Current User',
+      emailVerified: false,
       authProviderId: 'google',
     });
     await expect(service.rotate(issued.refreshToken)).rejects.toThrow('invalid_refresh_token');

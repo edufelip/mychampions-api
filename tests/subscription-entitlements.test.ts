@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { createApp } from '../src/app';
 import { createTokenService } from '../src/auth/tokens';
 import type { ProfileRepository } from '../src/profile/repository';
+import type {
+  RevenueCatCustomerManager,
+  RevenueCatCustomerPrivileges,
+} from '../src/subscription/revenuecat-customer-manager';
 
 function makeProfileRepository(): ProfileRepository {
   const rows = new Map<string, {
@@ -62,6 +66,8 @@ function makeSubscriptionRepository() {
         authUid: string;
         professionalEntitlementStatus: 'active' | 'lapsed' | 'unknown';
         aiEntitlementStatus: 'active' | 'lapsed' | 'unknown';
+        professionalEntitlementExpiresAt?: string | null;
+        professionalEntitlementRenewalRisk?: boolean;
         activeStudentCount: number | null;
         source: 'revenuecat';
         observedAt: string;
@@ -72,12 +78,28 @@ function makeSubscriptionRepository() {
           updatedAt: new Date(0).toISOString(),
         };
       },
+      async upsertSnapshotsAtomically(inputs: Array<{
+        authUid: string;
+        professionalEntitlementStatus: 'active' | 'lapsed' | 'unknown';
+        aiEntitlementStatus: 'active' | 'lapsed' | 'unknown';
+        professionalEntitlementExpiresAt?: string | null;
+        professionalEntitlementRenewalRisk?: boolean;
+        activeStudentCount: number | null;
+        source: 'revenuecat';
+        observedAt: string;
+      }>) {
+        const updatedAt = new Date(0).toISOString();
+        saved.push(...inputs);
+        return inputs.map((input) => ({ ...input, updatedAt }));
+      },
       async findLatestForAuthUid(authUid: string) {
         const latest = saved
           .filter((row): row is {
             authUid: string;
             professionalEntitlementStatus: 'active' | 'lapsed' | 'unknown';
             aiEntitlementStatus: 'active' | 'lapsed' | 'unknown';
+            professionalEntitlementExpiresAt?: string | null;
+            professionalEntitlementRenewalRisk?: boolean;
             activeStudentCount: number | null;
             source: 'revenuecat';
             observedAt: string;
@@ -95,8 +117,30 @@ function makeSubscriptionRepository() {
   };
 }
 
+function makeRevenueCatCustomerManager(
+  byAppUserId: Record<string, Partial<RevenueCatCustomerPrivileges>> = {}
+) {
+  const requestedAppUserIds: string[] = [];
+  const manager: RevenueCatCustomerManager = {
+    async getCustomerPrivileges(appUserId) {
+      requestedAppUserIds.push(appUserId);
+      return {
+        appUserId,
+        professionalEntitlementStatus: 'lapsed',
+        aiEntitlementStatus: 'lapsed',
+        professionalEntitlementExpiresAt: null,
+        professionalEntitlementRenewalRisk: false,
+        observedAt: '2026-07-03T16:45:30.000Z',
+        ...byAppUserId[appUserId],
+      };
+    },
+  };
+  return { manager, requestedAppUserIds };
+}
+
 const environmentKeys = [
   'NODE_ENV',
+  'REVENUECAT_SECRET_API_KEY',
   'REVENUECAT_WEBHOOK_AUTHORIZATION',
   'REVENUECAT_WEBHOOK_SIGNING_SECRET',
 ] as const;
@@ -153,6 +197,8 @@ describe('subscription entitlement snapshot API', () => {
         body: JSON.stringify({
           professionalEntitlementStatus: 'active',
           aiEntitlementStatus: 'lapsed',
+          professionalEntitlementExpiresAt: '2026-08-03T16:45:00.000Z',
+          professionalEntitlementRenewalRisk: true,
           activeStudentCount: 7,
           observedAt: '2026-07-03T16:45:00.000Z',
         }),
@@ -165,6 +211,8 @@ describe('subscription entitlement snapshot API', () => {
         authUid: session.profile.authUid,
         professionalEntitlementStatus: 'active',
         aiEntitlementStatus: 'lapsed',
+        professionalEntitlementExpiresAt: '2026-08-03T16:45:00.000Z',
+        professionalEntitlementRenewalRisk: true,
         activeStudentCount: 7,
         source: 'revenuecat',
         observedAt: '2026-07-03T16:45:00.000Z',
@@ -176,6 +224,8 @@ describe('subscription entitlement snapshot API', () => {
         authUid: session.profile.authUid,
         professionalEntitlementStatus: 'active',
         aiEntitlementStatus: 'lapsed',
+        professionalEntitlementExpiresAt: '2026-08-03T16:45:00.000Z',
+        professionalEntitlementRenewalRisk: true,
         activeStudentCount: 7,
         source: 'revenuecat',
         observedAt: '2026-07-03T16:45:00.000Z',
@@ -233,12 +283,48 @@ describe('subscription entitlement snapshot API', () => {
         authUid: session.profile.authUid,
         professionalEntitlementStatus: 'lapsed',
         aiEntitlementStatus: 'active',
+        professionalEntitlementExpiresAt: null,
+        professionalEntitlementRenewalRisk: false,
         activeStudentCount: 9,
         source: 'revenuecat',
         observedAt: '2026-07-03T17:45:00.000Z',
         updatedAt: new Date(0).toISOString(),
       },
     });
+  });
+
+  it('rejects malformed client entitlement expiry without storing a snapshot', async () => {
+    const subscriptions = makeSubscriptionRepository();
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      subscriptionEntitlementRepository: subscriptions.repository,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+    const sessionResponse = await app.handle(
+      new Request('http://server.test/auth/dev/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'Pro@Example.test', displayName: 'Pro User' }),
+      })
+    );
+    const session = await sessionResponse.json();
+
+    const response = await app.handle(
+      new Request('http://server.test/subscription/entitlements/snapshot', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          professionalEntitlementStatus: 'active',
+          aiEntitlementStatus: 'lapsed',
+          professionalEntitlementExpiresAt: 'not-a-date',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(subscriptions.saved).toEqual([]);
   });
 
   it('returns null when the authenticated user has no local entitlement snapshot', async () => {
@@ -408,12 +494,87 @@ describe('subscription entitlement snapshot API', () => {
     expect(subscriptions.saved).toEqual([]);
   });
 
+  it('refuses RevenueCat webhooks until canonical customer lookup is configured', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    delete process.env.REVENUECAT_SECRET_API_KEY;
+    const subscriptions = makeSubscriptionRepository();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ event: { app_user_id: 'auth-1', type: 'RENEWAL' } }),
+      })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'revenuecat_customer_api_not_configured' },
+    });
+    expect(subscriptions.saved).toEqual([]);
+  });
+
+  it('acknowledges an authenticated RevenueCat dashboard TEST without reconciling synthetic customer data', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    delete process.env.REVENUECAT_SECRET_API_KEY;
+    const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          event: {
+            id: 'dashboard-test-event',
+            type: 'TEST',
+            app_user_id: 'synthetic-dashboard-customer',
+          },
+          api_version: '1.0',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: 'accepted',
+      reconciledCustomers: 0,
+    });
+    expect(customers.requestedAppUserIds).toEqual([]);
+    expect(subscriptions.saved).toEqual([]);
+  });
+
   it('stores a RevenueCat webhook entitlement snapshot for the event app user id', async () => {
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
     delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
     const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager({
+      'auth-1': {
+        professionalEntitlementStatus: 'active',
+        aiEntitlementStatus: 'active',
+        professionalEntitlementExpiresAt: '2026-08-03T16:45:00.000Z',
+        professionalEntitlementRenewalRisk: false,
+        observedAt: '2026-07-03T16:45:30.000Z',
+      },
+    });
     const app = createApp({
       subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
     } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
 
     const response = await app.handle(
@@ -438,15 +599,21 @@ describe('subscription entitlement snapshot API', () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: 'accepted' });
+    await expect(response.json()).resolves.toEqual({
+      status: 'accepted',
+      reconciledCustomers: 1,
+    });
+    expect(customers.requestedAppUserIds).toEqual(['auth-1']);
     expect(subscriptions.saved).toEqual([
       {
         authUid: 'auth-1',
         professionalEntitlementStatus: 'active',
-        aiEntitlementStatus: 'lapsed',
+        aiEntitlementStatus: 'active',
+        professionalEntitlementExpiresAt: '2026-08-03T16:45:00.000Z',
+        professionalEntitlementRenewalRisk: false,
         activeStudentCount: null,
         source: 'revenuecat',
-        observedAt: '2026-07-03T16:45:00.000Z',
+        observedAt: '2026-07-03T16:45:30.000Z',
       },
     ]);
   });
@@ -455,8 +622,10 @@ describe('subscription entitlement snapshot API', () => {
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
     process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET = 'local-signing-secret';
     const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager();
     const app = createApp({
       subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
     } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
     const payload = JSON.stringify({
       event: {
@@ -497,7 +666,207 @@ describe('subscription entitlement snapshot API', () => {
     });
   });
 
-  it('rejects RevenueCat webhooks with invalid authorization or signature', async () => {
+  it('reconciles both sides of a RevenueCat transfer from canonical customer state', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager({
+      'auth-from': { professionalEntitlementStatus: 'lapsed' },
+      'auth-to': { professionalEntitlementStatus: 'active' },
+    });
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          event: {
+            id: 'transfer-1',
+            type: 'TRANSFER',
+            event_timestamp_ms: 1783097100000,
+            transferred_from: ['auth-from'],
+            transferred_to: ['auth-to'],
+          },
+          api_version: '1.0',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: 'accepted',
+      reconciledCustomers: 2,
+    });
+    expect(customers.requestedAppUserIds).toEqual(['auth-from', 'auth-to']);
+    expect(subscriptions.saved).toHaveLength(2);
+    expect(subscriptions.saved).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ authUid: 'auth-from', professionalEntitlementStatus: 'lapsed' }),
+        expect.objectContaining({ authUid: 'auth-to', professionalEntitlementStatus: 'active' }),
+      ])
+    );
+  });
+
+  it('retries later when canonical RevenueCat customer reconciliation fails', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    const subscriptions = makeSubscriptionRepository();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: {
+        async getCustomerPrivileges() {
+          throw new Error('RevenueCat unavailable');
+        },
+      },
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ event: { app_user_id: 'auth-1', type: 'RENEWAL' } }),
+      })
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'revenuecat_customer_reconciliation_failed' },
+    });
+    expect(subscriptions.saved).toEqual([]);
+  });
+
+  it('returns a retryable failure when canonical privileges cannot be persisted', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    const app = createApp({
+      subscriptionEntitlementRepository: {
+        async upsertSnapshot() {
+          throw new Error('database unavailable');
+        },
+        async upsertSnapshotsAtomically() {
+          throw new Error('database unavailable');
+        },
+        async findLatestForAuthUid() {
+          return null;
+        },
+      },
+      revenueCatCustomerManager: makeRevenueCatCustomerManager().manager,
+    });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ event: { app_user_id: 'auth-1', type: 'RENEWAL' } }),
+      })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: 'revenuecat_snapshot_persistence_failed',
+        message: 'RevenueCat customer state could not be persisted; retry the delivery.',
+      },
+    });
+  });
+
+  it('rejects malformed RevenueCat payloads before customer lookup', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    for (const body of [
+      'not-json',
+      JSON.stringify({}),
+      JSON.stringify({ event: { type: 'RENEWAL' } }),
+      JSON.stringify({
+        event: {
+          type: 'TRANSFER',
+          transferred_from: ['', null],
+          transferred_to: [false],
+        },
+      }),
+    ]) {
+      const response = await app.handle(
+        new Request('http://server.test/webhooks/revenuecat', {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer webhook-secret',
+            'content-type': 'application/json',
+          },
+          body,
+        })
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'invalid_revenuecat_webhook_payload' },
+      });
+    }
+    expect(customers.requestedAppUserIds).toEqual([]);
+    expect(subscriptions.saved).toEqual([]);
+  });
+
+  it('deduplicates and trims every customer in a transfer event', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer webhook-secret',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          event: {
+            app_user_id: ' auth-shared ',
+            type: 'TRANSFER',
+            transferred_from: ['auth-shared', ' auth-from ', 'auth-from'],
+            transferred_to: ['auth-to', ' auth-to ', null],
+          },
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: 'accepted',
+      reconciledCustomers: 3,
+    });
+    expect(customers.requestedAppUserIds).toEqual([
+      'auth-shared',
+      'auth-from',
+      'auth-to',
+    ]);
+    expect(subscriptions.saved).toHaveLength(3);
+  });
+
+  it('rejects RevenueCat webhooks with invalid authorization', async () => {
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
     process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET = 'local-signing-secret';
     const subscriptions = makeSubscriptionRepository();
@@ -525,6 +894,54 @@ describe('subscription entitlement snapshot API', () => {
     );
 
     expect(response.status).toBe(401);
+    expect(subscriptions.saved).toEqual([]);
+  });
+
+  it('rejects missing, malformed, incorrect, and stale RevenueCat signatures', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET = 'local-signing-secret';
+    const subscriptions = makeSubscriptionRepository();
+    const customers = makeRevenueCatCustomerManager();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+      revenueCatCustomerManager: customers.manager,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+    const payload = JSON.stringify({
+      event: {
+        type: 'RENEWAL',
+        app_user_id: 'auth-1',
+      },
+    });
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const signatures = [
+      undefined,
+      'not-a-signature',
+      `t=${nowSeconds},v1=${'0'.repeat(64)}`,
+      signRevenueCatPayload(payload, nowSeconds - 301, 'local-signing-secret'),
+    ];
+
+    for (const signature of signatures) {
+      const headers: Record<string, string> = {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      };
+      if (signature) {
+        headers['x-revenuecat-webhook-signature'] = signature;
+      }
+      const response = await app.handle(
+        new Request('http://server.test/webhooks/revenuecat', {
+          method: 'POST',
+          headers,
+          body: payload,
+        })
+      );
+
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'invalid_revenuecat_webhook_signature' },
+      });
+    }
+    expect(customers.requestedAppUserIds).toEqual([]);
     expect(subscriptions.saved).toEqual([]);
   });
 });

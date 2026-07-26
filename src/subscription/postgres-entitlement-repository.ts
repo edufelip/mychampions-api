@@ -7,9 +7,13 @@ import type {
   UpsertSubscriptionEntitlementSnapshotInput,
 } from './entitlement-repository';
 
-type Db = {
+type TransactionDb = {
   insert: Function;
   select: Function;
+};
+
+type Db = TransactionDb & {
+  transaction: <T>(callback: (transaction: TransactionDb) => Promise<T>) => Promise<T>;
 };
 
 function toIso(value: Date | string): string {
@@ -21,6 +25,10 @@ function mapSnapshot(row: SubscriptionEntitlementSnapshotRow): SubscriptionEntit
     authUid: row.authUid,
     professionalEntitlementStatus: row.professionalEntitlementStatus,
     aiEntitlementStatus: row.aiEntitlementStatus,
+    professionalEntitlementExpiresAt: row.professionalEntitlementExpiresAt
+      ? toIso(row.professionalEntitlementExpiresAt)
+      : null,
+    professionalEntitlementRenewalRisk: row.professionalEntitlementRenewalRisk,
     activeStudentCount: row.activeStudentCount,
     source: row.source,
     observedAt: toIso(row.observedAt),
@@ -34,13 +42,36 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
   async upsertSnapshot(
     input: UpsertSubscriptionEntitlementSnapshotInput
   ): Promise<SubscriptionEntitlementSnapshot> {
+    return this.upsertSnapshotWithDb(this.db, input);
+  }
+
+  async upsertSnapshotsAtomically(
+    inputs: UpsertSubscriptionEntitlementSnapshotInput[]
+  ): Promise<SubscriptionEntitlementSnapshot[]> {
+    return this.db.transaction(async (transaction) => {
+      const snapshots: SubscriptionEntitlementSnapshot[] = [];
+      for (const input of inputs) {
+        snapshots.push(await this.upsertSnapshotWithDb(transaction, input));
+      }
+      return snapshots;
+    });
+  }
+
+  private async upsertSnapshotWithDb(
+    db: TransactionDb,
+    input: UpsertSubscriptionEntitlementSnapshotInput
+  ): Promise<SubscriptionEntitlementSnapshot> {
     const observedAt = new Date(input.observedAt);
-    const [row] = await this.db
+    const [row] = await db
       .insert(subscriptionEntitlementSnapshots)
       .values({
         authUid: input.authUid,
         professionalEntitlementStatus: input.professionalEntitlementStatus,
         aiEntitlementStatus: input.aiEntitlementStatus,
+        professionalEntitlementExpiresAt: input.professionalEntitlementExpiresAt
+          ? new Date(input.professionalEntitlementExpiresAt)
+          : null,
+        professionalEntitlementRenewalRisk: input.professionalEntitlementRenewalRisk ?? false,
         activeStudentCount: input.activeStudentCount,
         source: input.source,
         observedAt,
@@ -51,6 +82,10 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
         set: {
           professionalEntitlementStatus: input.professionalEntitlementStatus,
           aiEntitlementStatus: input.aiEntitlementStatus,
+          professionalEntitlementExpiresAt: input.professionalEntitlementExpiresAt
+            ? new Date(input.professionalEntitlementExpiresAt)
+            : null,
+          professionalEntitlementRenewalRisk: input.professionalEntitlementRenewalRisk ?? false,
           activeStudentCount: input.activeStudentCount,
           source: input.source,
           observedAt,
@@ -65,7 +100,7 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
       return mapSnapshot(row);
     }
 
-    const latest = await this.findLatestForAuthUid(input.authUid);
+    const latest = await this.findLatestForAuthUidWithDb(db, input.authUid);
     if (!latest) {
       throw new Error('subscription_entitlement_snapshot_missing_after_conflict');
     }
@@ -74,7 +109,14 @@ export class PostgresSubscriptionEntitlementRepository implements SubscriptionEn
   }
 
   async findLatestForAuthUid(authUid: string): Promise<SubscriptionEntitlementSnapshot | null> {
-    const [row] = await this.db
+    return this.findLatestForAuthUidWithDb(this.db, authUid);
+  }
+
+  private async findLatestForAuthUidWithDb(
+    db: TransactionDb,
+    authUid: string
+  ): Promise<SubscriptionEntitlementSnapshot | null> {
+    const [row] = await db
       .select()
       .from(subscriptionEntitlementSnapshots)
       .where(eq(subscriptionEntitlementSnapshots.authUid, authUid))

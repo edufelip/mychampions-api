@@ -44,10 +44,45 @@ for required_file in "$compose_file" "$env_file" "$gcs_credentials_file" "$nginx
   fi
 done
 
-if ! grep -q '^AUTH_JWT_PRIVATE_JWK=.' "$env_file" || ! grep -q '^GCS_BUCKET=.' "$env_file"; then
+read_configured_env_value() {
+  local key="$1"
+  awk -v key="$key" '
+    index($0, key "=") == 1 {
+      value = substr($0, length(key) + 2)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      first = substr(value, 1, 1)
+      last = substr(value, length(value), 1)
+      if (length(value) >= 2 && ((first == "\"" && last == "\"") || (first == "\047" && last == "\047"))) {
+        value = substr(value, 2, length(value) - 2)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      }
+      result = value
+    }
+    END { print result }
+  ' "$env_file"
+}
+
+if [[ -z "$(read_configured_env_value AUTH_JWT_PRIVATE_JWK)" ]] ||
+  [[ -z "$(read_configured_env_value GCS_BUCKET)" ]]; then
   echo "The runtime env file must contain configured AUTH_JWT_PRIVATE_JWK and GCS_BUCKET values." >&2
   exit 1
 fi
+
+for revenuecat_runtime_key in \
+  REVENUECAT_SECRET_API_KEY \
+  REVENUECAT_WEBHOOK_AUTHORIZATION \
+  REVENUECAT_WEBHOOK_SIGNING_SECRET; do
+  revenuecat_runtime_value="$(read_configured_env_value "$revenuecat_runtime_key")"
+  if [[ -z "$revenuecat_runtime_value" ]]; then
+    echo "The runtime env file must contain a configured ${revenuecat_runtime_key} value." >&2
+    exit 1
+  fi
+  if [[ "$revenuecat_runtime_key" == "REVENUECAT_SECRET_API_KEY" &&
+    "$revenuecat_runtime_value" != sk_* ]]; then
+    echo "REVENUECAT_SECRET_API_KEY must be a server-only sk_* key before production cutover." >&2
+    exit 1
+  fi
+done
 
 if [[ ! -f "/etc/letsencrypt/live/$public_domain/fullchain.pem" || ! -f "/etc/letsencrypt/live/$public_domain/privkey.pem" ]]; then
   echo "TLS certificates for $public_domain are required before ingress cutover." >&2
