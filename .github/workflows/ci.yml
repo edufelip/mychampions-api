@@ -64,6 +64,24 @@ jobs:
     name: Test
     needs: impact
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mychampions_local
+          POSTGRES_PASSWORD: mychampions_local_password
+          POSTGRES_DB: mychampions_local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mychampions_local -d mychampions_local"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_server_local
+      FOOD_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_food_catalog_local
+      EXERCISE_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_exercise_catalog_local
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,6 +92,26 @@ jobs:
         with:
           bun-version: 1.3.10
       - run: bun install --frozen-lockfile
+
+      # Mirrors infra/local-postgres/initdb/001-catalog-databases.sql: the
+      # postgres service only creates its initial POSTGRES_DB, so the three
+      # app-owned databases still need to be created before migrating.
+      - name: Create service databases
+        env:
+          PGPASSWORD: mychampions_local_password
+        run: |
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_server_local OWNER mychampions_local;"
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_food_catalog_local OWNER mychampions_local;"
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_exercise_catalog_local OWNER mychampions_local;"
+
+      - name: Apply schema migrations
+        run: bun run db:migrate
+
+      # The food/exercise catalog databases only get their schema+rows from a
+      # production mirror (`bun run local:db:mirror`), which hosted CI can't
+      # do. Tests that need real catalog rows self-skip when CI=true (GitHub
+      # Actions sets this automatically) — see
+      # tests/postgres-{exercise,food}-search-gateway.test.ts.
       - name: Run tests
         env:
           FULL_SCOPE: ${{ needs.impact.outputs.full_scope }}

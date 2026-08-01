@@ -52,3 +52,20 @@ bun test --changed=<merge-base-sha> --pass-with-no-tests
 `tests/ci-classify-change-scope.test.ts` covers the classifier's decision
 logic directly (dependency/tooling/workflow/classifier changes → full scope;
 src/tests/docs-only changes → narrow; unrecognized paths → full scope).
+
+## Database in CI
+
+The `test` job runs a `postgres:16-alpine` service, creates the three app
+databases (mirroring `infra/local-postgres/initdb/001-catalog-databases.sql`),
+and applies `bun run db:migrate` before testing. That gives every test that
+needs the `mychampions_server_local` schema a real, empty, freshly-migrated
+Postgres to run against.
+
+It does **not** attempt to reproduce `mychampions_food_catalog_local` /
+`mychampions_exercise_catalog_local` content — those only get real rows from
+a production mirror (`bun run local:db:mirror`), and pulling production data
+into a hosted CI runner isn't something this workflow does. The three tests
+that assert against real catalog rows (`tests/postgres-exercise-search-gateway.test.ts`,
+`tests/postgres-food-search-gateway.test.ts`) detect `CI=true` (set
+automatically by GitHub Actions) and skip themselves there, with a comment
+explaining why. They still run normally in local dev against a mirrored DB.
