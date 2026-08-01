@@ -42,9 +42,9 @@ describe('local server stack contract', () => {
   });
 
   it('pins the requested Bun/Elysia/Drizzle runtime lines', () => {
-    expect(packageJson.packageManager).toBe('bun@1.3.10');
-    expect(packageJson.engines?.bun).toBe('1.3.10');
-    expect(bunVersionFile).toBe('1.3.10');
+    expect(packageJson.packageManager).toBe('bun@1.3.14');
+    expect(packageJson.engines?.bun).toBe('1.3.14');
+    expect(bunVersionFile).toBe('1.3.14');
     expect(packageJson.dependencies?.elysia).toBe('~1.4.0');
     expect(packageJson.dependencies?.['@elysiajs/bearer']).toBe('~1.4.0');
     expect(packageJson.dependencies?.['@elysiajs/jwt']).toBe('~1.4.0');

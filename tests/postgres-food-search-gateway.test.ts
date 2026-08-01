@@ -9,8 +9,14 @@ const databaseUrl =
   process.env.FOOD_CATALOG_DATABASE_URL ??
   'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_food_catalog_local';
 
+// Asserts against real catalog rows, which only exist when
+// FOOD_CATALOG_DATABASE_URL points at a database mirrored from production
+// (`bun run local:db:mirror`). Hosted CI provisions an empty Postgres, so it
+// can't run this; skip there and rely on local dev runs.
+const isCI = process.env.CI === 'true';
+
 describe('PostgresFoodSearchGateway', () => {
-  it('normalizes request locale and numeric catalog fields while respecting the result limit', async () => {
+  it.skipIf(isCI)('normalizes request locale and numeric catalog fields while respecting the result limit', async () => {
     const gateway = new PostgresFoodSearchGateway(databaseUrl);
 
     const results = await gateway.search({

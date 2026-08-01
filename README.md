@@ -19,7 +19,7 @@ Local-first backend for MyChampions mobile app-domain logic.
 
 ## Local Setup
 
-The server stack is pinned to Bun `1.3.10` through `package.json` and `.bun-version`.
+The server stack is pinned to Bun `1.3.14` through `package.json` and `.bun-version`.
 
 From the parent workspace:
 
