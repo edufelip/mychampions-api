@@ -46,9 +46,8 @@ describe('PostgresExerciseSearchGateway', () => {
     expect(detail?.title.length).toBeGreaterThan(0);
   });
 
-  it.skipIf(isCI)('returns null for a missing exercise and fails closed without catalog configuration', async () => {
+  it.skipIf(isCI)('returns null for a missing exercise', async () => {
     const gateway = new PostgresExerciseSearchGateway(databaseUrl);
-    const unconfigured = new PostgresExerciseSearchGateway(null);
 
     await expect(
       gateway.getById({
@@ -57,6 +56,14 @@ describe('PostgresExerciseSearchGateway', () => {
         lang: 'en-US',
       })
     ).resolves.toBeNull();
+  });
+
+  // Unlike the two tests above, this never touches the catalog database (the
+  // gateway is unconfigured), so it runs in hosted CI same as the food
+  // gateway's equivalent check in tests/postgres-food-search-gateway.test.ts.
+  it('fails closed without catalog configuration', async () => {
+    const unconfigured = new PostgresExerciseSearchGateway(null);
+
     await expect(
       unconfigured.search({
         authUid: 'coverage-user',
