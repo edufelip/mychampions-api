@@ -28,7 +28,7 @@ describe('VM deployment contract', () => {
     const dockerfile = await readFile(join(serverRoot, 'Dockerfile'), 'utf8');
     const compose = await readFile(join(serverRoot, 'infra', 'docker-compose.vm.yml'), 'utf8');
 
-    expect(dockerfile).toContain('FROM oven/bun:1.3.10');
+    expect(dockerfile).toContain('FROM oven/bun:1.3.14');
     expect(compose).toContain('127.0.0.1:3400:3400');
     expect(compose).toContain('127.0.0.1:3401:3400');
     expect(compose).toContain('root_default:');

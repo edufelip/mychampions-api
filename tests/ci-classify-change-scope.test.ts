@@ -43,6 +43,24 @@ describe('classify', () => {
     const result = classify(['src/routes/exercise-search.ts', 'README.md']);
     expect(result.fullScope).toBe(false);
   });
+
+  test('tooling config changes force full scope', () => {
+    for (const path of ['.bun-version', 'tsconfig.json', 'Dockerfile', 'drizzle.config.ts']) {
+      expect(classify([path]).fullScope).toBe(true);
+    }
+  });
+
+  test('infra and env-example changes stay narrow', () => {
+    const result = classify(['infra/main.tf', '.env.example', '.gitignore']);
+    expect(result.fullScope).toBe(false);
+  });
+
+  test('empty changeset stays narrow', () => {
+    const result = classify([]);
+    expect(result.fullScope).toBe(false);
+    expect(result.fullScopeHits).toEqual([]);
+    expect(result.unknownHits).toEqual([]);
+  });
 });
 
 describe('parseNameStatusZ', () => {
@@ -54,5 +72,21 @@ describe('parseNameStatusZ', () => {
   test('parses rename entries keeping old and new paths', () => {
     const raw = ['R100', 'src/old.ts', 'src/new.ts'].join('\0') + '\0';
     expect(parseNameStatusZ(raw)).toEqual(['src/old.ts', 'src/new.ts']);
+  });
+
+  test('parses a mix of modify, rename, and copy entries in one diff', () => {
+    const raw =
+      ['M', 'src/a.ts', 'R087', 'src/old.ts', 'src/new.ts', 'C092', 'src/base.ts', 'src/copy.ts'].join('\0') + '\0';
+    expect(parseNameStatusZ(raw)).toEqual([
+      'src/a.ts',
+      'src/old.ts',
+      'src/new.ts',
+      'src/base.ts',
+      'src/copy.ts',
+    ]);
+  });
+
+  test('returns an empty list for an empty diff', () => {
+    expect(parseNameStatusZ('')).toEqual([]);
   });
 });
