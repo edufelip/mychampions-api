@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  impact:
+    name: Classify change scope
+    runs-on: ubuntu-latest
+    outputs:
+      full_scope: ${{ steps.classify.outputs.full_scope }}
+      merge_base: ${{ steps.classify.outputs.merge_base }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      # Pushes to main are the authoritative build (post-merge or a direct
+      # push), so they always run the full suite. Only PRs get narrowed.
+      # The merge-base is computed explicitly inside classify-change-scope.ts
+      # (not diffed against the base branch tip) so commits that land on main
+      # after a PR branched off are never misattributed to that PR's diff.
+      - id: classify
+        name: Classify changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "full_scope=true" >> "$GITHUB_OUTPUT"
+            echo "merge_base=" >> "$GITHUB_OUTPUT"
+          else
+            bun scripts/ci/classify-change-scope.ts "$BASE_SHA" "$HEAD_SHA"
+          fi
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+
+  test:
+    name: Test
+    needs: impact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+      - name: Run tests
+        env:
+          FULL_SCOPE: ${{ needs.impact.outputs.full_scope }}
+          MERGE_BASE: ${{ needs.impact.outputs.merge_base }}
+        run: |
+          if [[ "$FULL_SCOPE" != "true" && -n "$MERGE_BASE" ]]; then
+            echo "Running tests related to changes since $MERGE_BASE"
+            bun test --changed="$MERGE_BASE" --pass-with-no-tests
+          else
+            echo "Running full test suite"
+            bun test
+          fi
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build .
