@@ -1,0 +1,84 @@
+name: Service Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Bun quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mychampions_local
+          POSTGRES_PASSWORD: mychampions_local_password
+          POSTGRES_DB: mychampions_local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mychampions_local -d mychampions_local"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_server_local
+      FOOD_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_food_catalog_local
+      EXERCISE_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_exercise_catalog_local
+      CATALOG_TEST_FIXTURES: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Create service databases
+        env:
+          PGPASSWORD: mychampions_local_password
+        run: |
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_server_local OWNER mychampions_local;"
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_food_catalog_local OWNER mychampions_local;"
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_exercise_catalog_local OWNER mychampions_local;"
+
+      - name: Apply schema migrations
+        run: bun run db:migrate
+
+      - name: Seed deterministic catalog fixtures
+        run: |
+          psql "$FOOD_CATALOG_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/fixtures/food-catalog-ci.sql
+          psql "$EXERCISE_CATALOG_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/fixtures/exercise-catalog-ci.sql
+
+      - name: Lint
+        run: bun run lint
+
+      - name: TypeScript build
+        run: bun run build
+
+      - name: Integration tests
+        run: bun run test:integration
+
+      - name: Contract tests
+        run: bun run test:contract

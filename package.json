@@ -11,7 +11,13 @@
     "dev": "bun --watch src/index.ts",
     "dev:web-e2e": "bun scripts/web-e2e-server.ts",
     "start": "bun src/index.ts",
+    "build": "bun run typecheck",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "bunx eslint src tests drizzle.config.ts",
     "test": "bun test",
+    "test:unit": "bun test tests",
+    "test:integration": "bun test tests",
+    "test:contract": "bun test tests/stack-contract.test.ts tests/vm-deployment-contract.test.ts tests/quality-workflow-contract.test.ts",
     "evidence:revenuecat-live": "bash infra/scripts/verify-revenuecat-live-evidence.sh",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
@@ -28,8 +34,12 @@
     "postgres": "~3.4.7"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/bun": "^1.3.14",
+    "@typescript-eslint/eslint-plugin": "^8.66.0",
+    "@typescript-eslint/parser": "^8.66.0",
     "drizzle-kit": "~0.31.8",
+    "eslint": "^10.8.1",
     "typescript": "^5.9.2"
   }
 }
