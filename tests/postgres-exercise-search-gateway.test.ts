@@ -9,14 +9,12 @@ const databaseUrl =
   process.env.EXERCISE_CATALOG_DATABASE_URL ??
   'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_exercise_catalog_local';
 
-// These assert against real catalog rows, which only exist when
-// EXERCISE_CATALOG_DATABASE_URL points at a database mirrored from
-// production (`bun run local:db:mirror`). Hosted CI provisions an empty
-// Postgres, so it can't run these; skip there and rely on local dev runs.
-const isCI = process.env.CI === 'true';
+// Local runs use a production mirror when available. Hosted quality runs set
+// CATALOG_TEST_FIXTURES=true after seeding deterministic rows into the CI DB.
+const runCatalogRowTests = process.env.CI !== 'true' || process.env.CATALOG_TEST_FIXTURES === 'true';
 
 describe('PostgresExerciseSearchGateway', () => {
-  it.skipIf(isCI)('normalizes localized catalog rows and loads the same exercise by id', async () => {
+  it.skipIf(!runCatalogRowTests)('normalizes localized catalog rows and loads the same exercise by id', async () => {
     const gateway = new PostgresExerciseSearchGateway(databaseUrl);
 
     const search = await gateway.search({
@@ -46,7 +44,7 @@ describe('PostgresExerciseSearchGateway', () => {
     expect(detail?.title.length).toBeGreaterThan(0);
   });
 
-  it.skipIf(isCI)('returns null for a missing exercise', async () => {
+  it.skipIf(!runCatalogRowTests)('returns null for a missing exercise', async () => {
     const gateway = new PostgresExerciseSearchGateway(databaseUrl);
 
     await expect(
@@ -59,8 +57,8 @@ describe('PostgresExerciseSearchGateway', () => {
   });
 
   // Unlike the two tests above, this never touches the catalog database (the
-  // gateway is unconfigured), so it runs in hosted CI same as the food
-  // gateway's equivalent check in tests/postgres-food-search-gateway.test.ts.
+  // gateway is unconfigured), so it remains useful even when the fixture
+  // switch is disabled for a local diagnostic run.
   it('fails closed without catalog configuration', async () => {
     const unconfigured = new PostgresExerciseSearchGateway(null);
 

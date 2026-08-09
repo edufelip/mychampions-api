@@ -14,10 +14,11 @@ contract commands.
 - `bun run test:contract` runs the stack/deployment and provider-boundary
   contract tests.
 
-The hosted `Service Quality` workflow provisions isolated Postgres databases,
-applies the server schema migrations, and then runs the same integration gate;
-catalog-only cases remain explicitly skipped when their mirrored catalog data
-is unavailable.
+The hosted `Service Quality` workflow checks out the exact pull-request head,
+provisions isolated Postgres databases, applies the server schema migrations,
+seeds deterministic food and exercise catalog fixtures, and then runs the same
+integration and contract gates. Local runs can still point at a production
+mirror, but hosted quality no longer treats catalog-row coverage as skipped.
 
 The test lane uses deterministic doubles. It does not perform production
 database writes, provider purchases, webhook mutations, or deployment actions.

@@ -33,9 +33,19 @@ jobs:
       DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_server_local
       FOOD_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_food_catalog_local
       EXERCISE_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_exercise_catalog_local
+      CATALOG_TEST_FIXTURES: 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -55,6 +65,11 @@ jobs:
 
       - name: Apply schema migrations
         run: bun run db:migrate
+
+      - name: Seed deterministic catalog fixtures
+        run: |
+          psql "$FOOD_CATALOG_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/fixtures/food-catalog-ci.sql
+          psql "$EXERCISE_CATALOG_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/fixtures/exercise-catalog-ci.sql
 
       - name: Lint
         run: bun run lint

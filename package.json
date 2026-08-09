@@ -17,7 +17,7 @@
     "test": "bun test",
     "test:unit": "bun test tests",
     "test:integration": "bun test tests",
-    "test:contract": "bun test tests/stack-contract.test.ts tests/vm-deployment-contract.test.ts",
+    "test:contract": "bun test tests/stack-contract.test.ts tests/vm-deployment-contract.test.ts tests/quality-workflow-contract.test.ts",
     "evidence:revenuecat-live": "bash infra/scripts/verify-revenuecat-live-evidence.sh",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"

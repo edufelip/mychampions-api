@@ -56,16 +56,11 @@ src/tests/docs-only changes → narrow; unrecognized paths → full scope).
 ## Database in CI
 
 The `test` job runs a `postgres:16-alpine` service, creates the three app
-databases (mirroring `infra/local-postgres/initdb/001-catalog-databases.sql`),
-and applies `bun run db:migrate` before testing. That gives every test that
-needs the `mychampions_server_local` schema a real, empty, freshly-migrated
-Postgres to run against.
-
-It does **not** attempt to reproduce `mychampions_food_catalog_local` /
-`mychampions_exercise_catalog_local` content — those only get real rows from
-a production mirror (`bun run local:db:mirror`), and pulling production data
-into a hosted CI runner isn't something this workflow does. The three tests
-that assert against real catalog rows (`tests/postgres-exercise-search-gateway.test.ts`,
-`tests/postgres-food-search-gateway.test.ts`) detect `CI=true` (set
-automatically by GitHub Actions) and skip themselves there, with a comment
-explaining why. They still run normally in local dev against a mirrored DB.
+databases, and applies `bun run db:migrate` before testing. The `Service
+Quality` job uses the same isolated service boundary, checks out the exact PR
+head, and additionally seeds deterministic rows from
+`tests/fixtures/food-catalog-ci.sql` and
+`tests/fixtures/exercise-catalog-ci.sql`. With `CATALOG_TEST_FIXTURES=true`,
+the food and exercise gateway tests execute their real SQL paths in hosted CI
+instead of being skipped. Local development can still point at a production
+mirror when broader catalog data is useful.
