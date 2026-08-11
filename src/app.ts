@@ -268,6 +268,12 @@ function timingSafeHexEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+function timingSafeStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'utf8');
+  const rightBuffer = Buffer.from(right, 'utf8');
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function verifyRevenueCatWebhookSignature(input: {
   rawBody: string;
   signatureHeader: string | null;
@@ -1759,7 +1765,13 @@ export function createApp(deps: CreateAppDeps = {}) {
         };
       }
 
-      if (request.headers.get('authorization') !== config.revenueCatWebhookAuthorization) {
+      const providedAuthorization = request.headers.get('authorization');
+      const expectedAuthorization = config.revenueCatWebhookAuthorization;
+      if (
+        !providedAuthorization ||
+        !expectedAuthorization ||
+        !timingSafeStringEqual(providedAuthorization, expectedAuthorization)
+      ) {
         set.status = 401;
         return {
           error: {
