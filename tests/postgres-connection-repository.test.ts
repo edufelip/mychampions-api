@@ -1313,6 +1313,120 @@ describe('PostgresConnectionRepository', () => {
     })).rejects.toBeInstanceOf(ConnectionAlreadyExistsError);
   });
 
+  it('lets exactly one concurrent confirm win and runs side effects for that winner only', async () => {
+    await database.client`
+      insert into connections (
+        id,
+        status,
+        canceled_reason,
+        specialty,
+        professional_auth_uid,
+        student_auth_uid,
+        source_invite_code_id,
+        source_invite_code_value,
+        created_at,
+        updated_at,
+        ended_at
+      ) values (
+        'pending-race',
+        'pending_confirmation',
+        null,
+        'nutritionist',
+        'professional-1',
+        'student-1',
+        'nutritionist',
+        'NUT123',
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z',
+        null
+      )
+    `;
+    await database.client`
+      insert into connection_invite_guards (
+        id,
+        connection_id,
+        professional_auth_uid,
+        student_auth_uid,
+        specialty,
+        status,
+        created_at,
+        updated_at
+      ) values (
+        'professional-1_student-1_nutritionist',
+        'pending-race',
+        'professional-1',
+        'student-1',
+        'nutritionist',
+        'pending_confirmation',
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z'
+      )
+    `;
+
+    // Fire 5 near-simultaneous confirms at the same pending connection, exactly
+    // as the field repro did (2x 200, 3x 409 before the fix). Each attempt
+    // gets its own dedicated postgres-js connection (pre-warmed with a no-op
+    // query first) so the 5 "read status" queries genuinely race across
+    // separate DB sessions instead of being serialized by a shared pool or by
+    // V8 microtask ordering — a same-process, same-connection Promise.all
+    // does not reproduce this bug because the pool tends to complete each
+    // request's full read-check-write sequence before the next one starts.
+    const attempts = 5;
+    const lanes = Array.from({ length: attempts }, () => {
+      const laneDb = createDatabase(databaseUrl);
+      return { repository: new PostgresConnectionRepository(laneDb.db), close: laneDb.close };
+    });
+    await Promise.all(lanes.map((lane) => lane.repository.listForAuthUid('warmup')));
+
+    const results = await Promise.allSettled(
+      lanes.map((lane) =>
+        lane.repository.confirmPendingConnection({
+          connectionId: 'pending-race',
+          professionalAuthUid: 'professional-1',
+        })
+      )
+    );
+    await Promise.all(lanes.map((lane) => lane.close()));
+
+    const fulfilled = results.filter((result) => result.status === 'fulfilled');
+    const rejected = results.filter((result) => result.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(attempts - 1);
+    for (const result of rejected) {
+      if (result.status === 'rejected') {
+        // A loser rejects because the atomic UPDATE it raced to run affected
+        // zero rows (InvalidConnectionTransitionError), or — if it reaches the
+        // pre-existing activeConflicts read after the winner has already
+        // committed — because that read now finds this same connection as an
+        // "active conflict" against itself (ConnectionAlreadyExistsError).
+        // Both are 409s and, critically, neither runs the confirm side effects.
+        expect(
+          result.reason instanceof InvalidConnectionTransitionError ||
+            result.reason instanceof ConnectionAlreadyExistsError
+        ).toBe(true);
+      }
+    }
+
+    const rows = await database.client`
+      select status, updated_at from connections where id = 'pending-race'
+    `;
+    expect(rows[0].status).toBe('active');
+
+    // The once-only side effect chain must have released the pending invite
+    // guard exactly once, not once per request that reached the write.
+    const guardRows = await database.client`
+      select id from connection_invite_guards where id = 'professional-1_student-1_nutritionist'
+    `;
+    expect(guardRows).toHaveLength(0);
+
+    const trackingRows = await database.client`
+      select status from tracking_access where connection_id = 'pending-race'
+    `;
+    expect(trackingRows).toHaveLength(1);
+    expect(trackingRows[0].status).toBe('active');
+  });
+
   it('gets the active invite code or creates one for the professional specialty', async () => {
     nextGeneratedCode = 'FIT999';
 
