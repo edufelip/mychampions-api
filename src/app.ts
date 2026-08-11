@@ -117,6 +117,7 @@ import {
   type ExerciseSearchGateway,
 } from './integrations/exercise-search-gateway';
 import {
+  PlanChangeRequestForbiddenError,
   PlanChangeRequestNotFoundError,
   type PlanChangeRequest,
   type PlanChangeRequestRepository,
@@ -3153,6 +3154,10 @@ export function createApp(deps: CreateAppDeps = {}) {
           if (error instanceof PlanChangeRequestNotFoundError) {
             set.status = 404;
             return { error: { code: 'plan_change_request_not_found', message: error.message } };
+          }
+          if (error instanceof PlanChangeRequestForbiddenError) {
+            set.status = 403;
+            return { error: { code: 'plan_change_request_forbidden', message: error.message } };
           }
           throw error;
         }
