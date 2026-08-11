@@ -944,6 +944,12 @@ function foodSearchGatewayErrorResponse(error: unknown, set: { status?: number |
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  if (error.code === 'upstream') {
+    console.error('[food-search] upstream gateway error:', error.message);
+    return { error: error.code, message: 'Food catalog search failed.' };
+  }
+
   return {
     error: error.code,
     message: error.message,
@@ -956,6 +962,12 @@ function exerciseSearchGatewayErrorResponse(error: unknown, set: { status?: numb
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  if (error.code === 'upstream') {
+    console.error('[exercise-search] upstream gateway error:', error.message);
+    return { error: error.code, message: 'Exercise catalog search failed.' };
+  }
+
   return {
     error: error.code,
     message: error.message,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createApp } from '../src/app';
+import { FoodSearchGatewayError } from '../src/integrations/food-search-gateway';
 import type { ProfileRepository } from '../src/profile/repository';
 
 function makeProfileRepository(): ProfileRepository {
@@ -130,5 +131,39 @@ describe('food search API', () => {
     );
 
     expect(response.status).toBe(401);
+  });
+
+  it('does not leak the raw upstream driver error message when the catalog query fails', async () => {
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      foodSearchGateway: {
+        async search() {
+          throw new FoodSearchGatewayError('upstream', 'relation "catalog_foods" does not exist');
+        },
+      },
+    } as any);
+    const session = await issueSession(app);
+
+    const response = await app.handle(
+      new Request('http://server.test/integrations/food/search', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: 'rice',
+          maxResults: 7,
+          region: 'br',
+          language: 'pt',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(502);
+    const payload = await response.json();
+    expect(payload).toEqual({ error: 'upstream', message: 'Food catalog search failed.' });
+    expect(JSON.stringify(payload)).not.toContain('catalog_foods');
+    expect(JSON.stringify(payload)).not.toContain('relation');
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createApp } from '../src/app';
+import { ExerciseSearchGatewayError } from '../src/integrations/exercise-search-gateway';
 import type { ProfileRepository } from '../src/profile/repository';
 
 function makeProfileRepository(): ProfileRepository {
@@ -170,5 +171,70 @@ describe('exercise search API', () => {
     );
 
     expect(response.status).toBe(401);
+  });
+
+  it('does not leak the raw upstream driver error message when the catalog query fails', async () => {
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      exerciseSearchGateway: {
+        async search() {
+          throw new ExerciseSearchGatewayError('upstream', 'relation "catalog_exercises" does not exist');
+        },
+        async getById() {
+          throw new Error('detail gateway should not be called for search');
+        },
+      },
+    } as any);
+    const session = await issueSession(app);
+
+    const response = await app.handle(
+      new Request('http://server.test/integrations/exercise/search', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: 'push',
+          pageSize: 5,
+          lang: 'en-US',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(502);
+    const payload = await response.json();
+    expect(payload).toEqual({ error: 'upstream', message: 'Exercise catalog search failed.' });
+    expect(JSON.stringify(payload)).not.toContain('catalog_exercises');
+    expect(JSON.stringify(payload)).not.toContain('relation');
+  });
+
+  it('does not leak the raw upstream driver error message when the detail lookup fails', async () => {
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      exerciseSearchGateway: {
+        async search() {
+          throw new Error('search gateway should not be called for detail');
+        },
+        async getById() {
+          throw new ExerciseSearchGatewayError('upstream', 'connection terminated unexpectedly');
+        },
+      },
+    } as any);
+    const session = await issueSession(app);
+
+    const response = await app.handle(
+      new Request('http://server.test/integrations/exercise/exercises/ex-push-up?lang=en-US', {
+        method: 'GET',
+        headers: {
+          authorization: `Bearer ${session.accessToken}`,
+        },
+      })
+    );
+
+    expect(response.status).toBe(502);
+    const payload = await response.json();
+    expect(payload).toEqual({ error: 'upstream', message: 'Exercise catalog search failed.' });
+    expect(JSON.stringify(payload)).not.toContain('connection terminated');
   });
 });
