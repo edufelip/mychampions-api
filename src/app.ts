@@ -1428,9 +1428,6 @@ export function createApp(deps: CreateAppDeps = {}) {
   }
 
   const app = new Elysia()
-    .onError(({ error, code }) => {
-      console.error('[DIAGNOSTIC unhandled error]', code, error);
-    })
     .onRequest(({ request, set }) => {
       const origin = request.headers.get('origin');
       if (origin && !config.allowedWebOrigins.includes(origin)) {

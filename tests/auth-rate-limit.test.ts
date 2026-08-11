@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createApp } from '../src/app';
+import { InMemoryPasswordResetService } from '../src/auth/password-reset';
 import { readConfig } from '../src/config';
+import type { ProfileRepository } from '../src/profile/repository';
 
 function rateLimitedConfig(overrides: Record<string, string | undefined> = {}) {
   return readConfig({
@@ -9,6 +11,45 @@ function rateLimitedConfig(overrides: Record<string, string | undefined> = {}) {
     AUTH_RATE_LIMIT_MAX: '3',
     LOCAL_DEV_AUTH_ENABLED: 'true',
     ...overrides,
+  });
+}
+
+// Every route these tests flood (dev-session, password-reset) is reachable
+// without real Postgres. Injecting in-memory doubles here — the same pattern
+// every other test file in this suite already uses — keeps this file from
+// opening its own real connection pool, which otherwise adds to the total
+// concurrent-pool count the full 56-file suite accumulates in CI.
+function makeProfileRepository(): ProfileRepository {
+  return {
+    async upsertFromSession(input) {
+      return {
+        authUid: input.authUid,
+        displayName: input.displayName,
+        emailNormalized: input.emailNormalized,
+        lockedRole: 'student',
+        acceptedTermsVersion: null,
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      };
+    },
+    async findByAuthUid() {
+      return null;
+    },
+    async lockRole() {
+      throw new Error('not implemented');
+    },
+    async setAcceptedTermsVersion() {
+      throw new Error('not implemented');
+    },
+    async deleteByAuthUid() {},
+  };
+}
+
+function makeApp(overrides: Record<string, string | undefined> = {}) {
+  return createApp({
+    config: rateLimitedConfig(overrides),
+    profileRepository: makeProfileRepository(),
+    passwordResetService: new InMemoryPasswordResetService(),
   });
 }
 
@@ -28,9 +69,21 @@ function passwordResetRequest(headers: Record<string, string> = {}) {
   });
 }
 
+function passwordResetConfirmRequest(headers: Record<string, string> = {}) {
+  return new Request('http://server.test/auth/password-reset/confirm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({
+      email: 'flood-target@example.test',
+      token: 'not-a-real-token',
+      newPassword: 'Password1!',
+    }),
+  });
+}
+
 describe('auth rate limiting', () => {
   it('returns 429 once a client exceeds the configured per-IP request budget', async () => {
-    const app = createApp({ config: rateLimitedConfig() });
+    const app = makeApp();
 
     const statuses: number[] = [];
     for (let i = 0; i < 4; i += 1) {
@@ -48,7 +101,7 @@ describe('auth rate limiting', () => {
   });
 
   it('shares one per-IP budget across every credential-adjacent route', async () => {
-    const app = createApp({ config: rateLimitedConfig() });
+    const app = makeApp();
 
     const first = await app.handle(devSessionRequest('shared-budget-1@example.test'));
     const second = await app.handle(devSessionRequest('shared-budget-2@example.test'));
@@ -62,8 +115,24 @@ describe('auth rate limiting', () => {
     expect(fourth.status).toBe(429);
   });
 
+  it('also rate-limits the password-reset confirm route', async () => {
+    const app = makeApp();
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const response = await app.handle(passwordResetConfirmRequest());
+      statuses.push(response.status);
+    }
+
+    // The first 3 confirm attempts reach the handler (and correctly fail with
+    // invalid_or_expired_token, since the token is fake); the 4th is throttled
+    // before ever reaching the handler.
+    expect(statuses.slice(0, 3)).toEqual([400, 400, 400]);
+    expect(statuses[3]).toBe(429);
+  });
+
   it('does not throttle routes outside the sensitive-route set', async () => {
-    const app = createApp({ config: rateLimitedConfig() });
+    const app = makeApp();
 
     for (let i = 0; i < 5; i += 1) {
       await app.handle(devSessionRequest(`exhaust-${i}@example.test`));
@@ -77,7 +146,7 @@ describe('auth rate limiting', () => {
   });
 
   it('tracks separate budgets per client IP using the X-Real-IP header set by Nginx', async () => {
-    const app = createApp({ config: rateLimitedConfig() });
+    const app = makeApp();
 
     const clientAStatuses: number[] = [];
     for (let i = 0; i < 3; i += 1) {
