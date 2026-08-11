@@ -130,7 +130,8 @@ describe('local server stack contract', () => {
     expect(emailAuthStart).toBeGreaterThanOrEqual(0);
     expect(socialAuthStart).toBeGreaterThan(emailAuthStart);
     expect(passwordResetStart).toBeGreaterThanOrEqual(0);
-    expect(emailAuthSection).toContain('verify or create Argon2id credentials in local Postgres');
+    expect(emailAuthSection).toContain('verifies Argon2id credentials in local Postgres');
+    expect(emailAuthSection).toContain('creates the Argon2id credential row');
     expect(passwordResetSection).toContain('provider-neutral local password-reset request');
     expect(emailAuthSection).not.toContain('Firebase Auth');
     expect(passwordResetSection).not.toContain('Firebase Auth');

@@ -1660,7 +1660,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .post(
       '/auth/email/create-account',
-      async ({ body, cookie, request, set }) => {
+      async ({ body, set }) => {
         const emailNormalized = normalizeEmail(body.email);
         const displayName = body.displayName.trim();
         if (!isEmailLike(emailNormalized)) {
@@ -1673,22 +1673,30 @@ export function createApp(deps: CreateAppDeps = {}) {
         }
 
         try {
-          const identity = await emailAuthGateway.createAccount({
+          await emailAuthGateway.createAccount({
             email: emailNormalized,
             password: body.password,
             displayName,
           });
-          return await issueProviderAuthSession(
-            identity,
-            'email_password',
-            cookie,
-            set,
-            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins),
-            isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
-          );
         } catch (error) {
+          if (error instanceof EmailAuthGatewayError && error.code === 'duplicate_email') {
+            // Do not distinguish "email already registered" from a genuine signup: an
+            // attacker could otherwise enumerate registered emails by watching for this
+            // status/body pair. Fall through to the same generic response issued below,
+            // and never issue a session here since the requester has not proven
+            // ownership of the existing account. See ET-75.
+            set.status = 202;
+            return { status: 'accepted' };
+          }
           return emailAuthGatewayErrorResponse(error, set);
         }
+
+        // A brand-new account was created, but no session is issued from this endpoint
+        // any more: the response must be identical to the duplicate-email branch above,
+        // so issuing tokens here would itself leak which case occurred. The client signs
+        // in separately with the credentials it just submitted.
+        set.status = 202;
+        return { status: 'accepted' };
       },
       {
         body: t.Object({
