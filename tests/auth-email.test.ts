@@ -193,6 +193,9 @@ describe('email auth API', () => {
         async createAccount() {
           throw new EmailAuthGatewayError('duplicate_email', 'Email is already registered.');
         },
+        async updatePassword() {
+          throw new Error('updatePassword should not be called');
+        },
       },
     } as Parameters<typeof createApp>[0] & { emailAuthGateway: unknown });
 
