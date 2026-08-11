@@ -41,6 +41,13 @@ export class PlanChangeRequestNotFoundError extends Error {
   }
 }
 
+export class PlanChangeRequestForbiddenError extends Error {
+  constructor(message = 'Plan change request cannot be reviewed by the authenticated professional.') {
+    super(message);
+    this.name = 'PlanChangeRequestForbiddenError';
+  }
+}
+
 export interface PlanChangeRequestRepository {
   create(input: CreatePlanChangeRequestInput): Promise<PlanChangeRequest>;
   listForStudent(input: ListPlanChangeRequestsForStudentInput): Promise<PlanChangeRequest[]>;

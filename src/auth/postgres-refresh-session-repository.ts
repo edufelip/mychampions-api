@@ -67,4 +67,11 @@ export class PostgresRefreshSessionRepository implements RefreshSessionRepositor
       .returning({ id: authSessions.id });
     return Boolean(revoked);
   }
+
+  async revokeAllForAuthUid(input: { authUid: string; now: Date }): Promise<void> {
+    await this.db
+      .update(authSessions)
+      .set({ revokedAt: input.now })
+      .where(and(eq(authSessions.authUid, input.authUid), isNull(authSessions.revokedAt)));
+  }
 }
