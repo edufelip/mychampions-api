@@ -88,4 +88,50 @@ describe('PostgresRefreshSessionRepository', () => {
     expect(new Date(rows[0].revoked_at).toISOString()).toBe('2026-07-11T12:05:00.000Z');
     expect(JSON.stringify(rows)).not.toContain('raw-refresh-token');
   });
+
+  it('revokes every active session for an auth uid without touching other users', async () => {
+    const createdAt = new Date('2026-07-11T12:00:00.000Z');
+    const expiresAt = new Date('2026-08-10T12:00:00.000Z');
+    await repository.create({
+      id: 'revoke-all-session-1',
+      authUid: 'revoke-all-user-1',
+      refreshTokenDigest: digest('token-1'),
+      authProviderId: 'email_password',
+      expiresAt,
+      createdAt,
+    });
+    await repository.create({
+      id: 'revoke-all-session-2',
+      authUid: 'revoke-all-user-1',
+      refreshTokenDigest: digest('token-2'),
+      authProviderId: 'email_password',
+      expiresAt,
+      createdAt,
+    });
+    await repository.create({
+      id: 'revoke-all-session-other',
+      authUid: 'revoke-all-user-2',
+      refreshTokenDigest: digest('token-other'),
+      authProviderId: 'email_password',
+      expiresAt,
+      createdAt,
+    });
+
+    await repository.revokeAllForAuthUid({
+      authUid: 'revoke-all-user-1',
+      now: new Date('2026-07-11T12:10:00.000Z'),
+    });
+
+    const rows = await database.client`
+      select id, auth_uid, revoked_at
+      from auth_sessions
+      where id in ('revoke-all-session-1', 'revoke-all-session-2', 'revoke-all-session-other')
+      order by id
+    `;
+    expect(rows).toHaveLength(3);
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
+    expect(byId['revoke-all-session-1'].revoked_at).not.toBeNull();
+    expect(byId['revoke-all-session-2'].revoked_at).not.toBeNull();
+    expect(byId['revoke-all-session-other'].revoked_at).toBeNull();
+  });
 });

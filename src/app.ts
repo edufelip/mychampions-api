@@ -46,6 +46,7 @@ import {
 import { PostgresRefreshSessionRepository } from './auth/postgres-refresh-session-repository';
 import {
   InMemoryPasswordResetService,
+  PasswordResetConfirmError,
   type PasswordResetService,
 } from './auth/password-reset';
 import { PostgresPasswordResetService } from './auth/postgres-password-reset';
@@ -118,6 +119,7 @@ import {
   type ExerciseSearchGateway,
 } from './integrations/exercise-search-gateway';
 import {
+  PlanChangeRequestForbiddenError,
   PlanChangeRequestNotFoundError,
   type PlanChangeRequest,
   type PlanChangeRequestRepository,
@@ -176,6 +178,7 @@ const AUTH_RATE_LIMITED_PATHS = new Set([
   "/auth/email/sign-in",
   "/auth/social/sign-in",
   "/auth/password-reset",
+  "/auth/password-reset/confirm",
 ]);
 
 // The server only accepts traffic on 127.0.0.1 behind Nginx (see README "VM
@@ -295,6 +298,12 @@ function parseRevenueCatSignatureHeader(header: string): { timestamp: number; si
 function timingSafeHexEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left, 'hex');
   const rightBuffer = Buffer.from(right, 'hex');
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'utf8');
+  const rightBuffer = Buffer.from(right, 'utf8');
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
@@ -471,6 +480,8 @@ function emailAuthGatewayErrorResponse(error: unknown, set: { status?: number | 
     set.status = 503;
   } else if (error.code === 'invalid_credentials') {
     set.status = 401;
+  } else if (error.code === 'account_not_found') {
+    set.status = 404;
   } else {
     set.status = 409;
   }
@@ -513,6 +524,21 @@ function passwordResetDeliveryGatewayErrorResponse(
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+    },
+  };
+}
+
+function passwordResetConfirmErrorResponse(error: unknown, set: { status?: number | string }) {
+  if (!(error instanceof PasswordResetConfirmError)) {
+    throw error;
+  }
+
+  set.status = 400;
 
   return {
     error: {
@@ -974,6 +1000,12 @@ function foodSearchGatewayErrorResponse(error: unknown, set: { status?: number |
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  if (error.code === 'upstream') {
+    console.error('[food-search] upstream gateway error:', error.message);
+    return { error: error.code, message: 'Food catalog search failed.' };
+  }
+
   return {
     error: error.code,
     message: error.message,
@@ -986,6 +1018,12 @@ function exerciseSearchGatewayErrorResponse(error: unknown, set: { status?: numb
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  if (error.code === 'upstream') {
+    console.error('[exercise-search] upstream gateway error:', error.message);
+    return { error: error.code, message: 'Exercise catalog search failed.' };
+  }
+
   return {
     error: error.code,
     message: error.message,
@@ -1722,6 +1760,47 @@ export function createApp(deps: CreateAppDeps = {}) {
       }
     )
     .post(
+      '/auth/password-reset/confirm',
+      async ({ body, set }) => {
+        const emailNormalized = normalizeEmail(body.email);
+        if (!isEmailLike(emailNormalized)) {
+          set.status = 400;
+          return { error: { code: 'invalid_email', message: 'Email is invalid.' } };
+        }
+
+        try {
+          await passwordResetService.confirm({
+            emailNormalized,
+            token: body.token,
+          });
+        } catch (error) {
+          return passwordResetConfirmErrorResponse(error, set);
+        }
+
+        let updateResult: { authUid: string };
+        try {
+          updateResult = await emailAuthGateway.updatePassword({
+            email: emailNormalized,
+            newPassword: body.newPassword,
+          });
+        } catch (error) {
+          return emailAuthGatewayErrorResponse(error, set);
+        }
+
+        await refreshSessionService.revokeAllForAuthUid(updateResult.authUid);
+
+        set.status = 200;
+        return { status: 'reset' };
+      },
+      {
+        body: t.Object({
+          email: t.String({ minLength: 1 }),
+          token: t.String({ minLength: 1 }),
+          newPassword: t.String({ minLength: 1 }),
+        }),
+      }
+    )
+    .post(
       '/analytics/events',
       async ({ body, set }) => {
         if (containsSensitiveAnalyticsProperty(body.properties)) {
@@ -1800,7 +1879,13 @@ export function createApp(deps: CreateAppDeps = {}) {
         };
       }
 
-      if (request.headers.get('authorization') !== config.revenueCatWebhookAuthorization) {
+      const providedAuthorization = request.headers.get('authorization');
+      const expectedAuthorization = config.revenueCatWebhookAuthorization;
+      if (
+        !providedAuthorization ||
+        !expectedAuthorization ||
+        !timingSafeStringEqual(providedAuthorization, expectedAuthorization)
+      ) {
         set.status = 401;
         return {
           error: {
@@ -2310,6 +2395,17 @@ export function createApp(deps: CreateAppDeps = {}) {
             connection.professionalAuthUid === auth.sub &&
             connection.studentAuthUid === params.studentUid
         );
+
+        if (relevant.length === 0) {
+          set.status = 403;
+          return {
+            error: {
+              code: 'assignment_snapshot_forbidden',
+              message: 'A connection to this student is required to read their assignment snapshot.',
+            },
+          };
+        }
+
         const summary = summarizeStudentConnections(relevant);
         const profile = await profileRepository.findByAuthUid(params.studentUid);
 
@@ -3160,6 +3256,10 @@ export function createApp(deps: CreateAppDeps = {}) {
             set.status = 404;
             return { error: { code: 'plan_change_request_not_found', message: error.message } };
           }
+          if (error instanceof PlanChangeRequestForbiddenError) {
+            set.status = 403;
+            return { error: { code: 'plan_change_request_forbidden', message: error.message } };
+          }
           throw error;
         }
       },
@@ -3617,7 +3717,22 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .get(
       '/media/custom-meal-images/:ownerAuthUid/:mealId/:filename',
-      async ({ params, set }) => {
+      async ({ auth, params, set }) => {
+        if (!auth?.sub) {
+          set.status = 401;
+          return { error: { code: 'unauthorized', message: 'Missing or invalid bearer token.' } };
+        }
+
+        if (auth.sub !== params.ownerAuthUid) {
+          set.status = 403;
+          return {
+            error: {
+              code: 'custom_meal_image_forbidden',
+              message: 'You do not have access to this custom meal image.',
+            },
+          };
+        }
+
         try {
           const stored = await mealImageStorage.read(params);
           if (!stored) {
