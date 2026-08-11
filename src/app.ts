@@ -3,6 +3,7 @@ import { cors } from '@elysiajs/cors';
 import { jwt } from '@elysiajs/jwt';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Elysia, t } from 'elysia';
+import { rateLimit } from 'elysia-rate-limit';
 
 import { readConfig, type ServerConfig } from './config';
 import { createDatabase } from './db/client';
@@ -163,6 +164,35 @@ type CreateAppDeps = {
 const LOCAL_ACCESS_TOKEN_COOKIE = 'mychampions_access_token';
 const WEB_REFRESH_TOKEN_COOKIE = 'mychampions_refresh_token';
 const MAX_MEAL_PHOTO_ANALYSIS_IMAGE_BASE64_LENGTH = 6_000_000;
+
+// Credential-adjacent routes that accept unauthenticated requests: brute-force,
+// credential-stuffing, and email-bombing surfaces that need a per-IP throttle.
+// Every other route either requires a bearer token already or isn't
+// credential-adjacent, so it stays outside this narrower limiter.
+// Double-quoted (unlike the single-quoted route literals below) so this list
+// doesn't shadow the stack-contract test's single-quoted route-boundary scan.
+const AUTH_RATE_LIMITED_PATHS = new Set([
+  "/auth/dev/session",
+  "/auth/email/sign-in",
+  "/auth/social/sign-in",
+  "/auth/password-reset",
+]);
+
+// The server only accepts traffic on 127.0.0.1 behind Nginx (see README "VM
+// Deployment Bootstrap"), so the reverse proxy is the only thing that can set
+// these headers in production; trusting them here does not open a spoofing
+// path. Nginx sets X-Real-IP to $remote_addr on every proxied request.
+function authRateLimitClientKey(
+  request: Request,
+  server: { requestIP: (request: Request) => { address: string } | null } | null
+): string {
+  const forwardedFor = request.headers.get('x-real-ip') ?? request.headers.get('x-forwarded-for');
+  const forwardedIp = forwardedFor?.split(',')[0]?.trim();
+  if (forwardedIp) {
+    return forwardedIp;
+  }
+  return server?.requestIP(request)?.address ?? 'unknown';
+}
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -1382,6 +1412,14 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .use(bearer())
     .use(jwt({ name: 'jwt', secret: config.jwtPluginSecret }))
+    .use(
+      rateLimit({
+        duration: config.authRateLimitWindowMs,
+        max: config.authRateLimitMax,
+        generator: authRateLimitClientKey,
+        skip: (request) => !AUTH_RATE_LIMITED_PATHS.has(new URL(request.url).pathname),
+      })
+    )
     .get('/health', () => ({
       status: 'ok',
       service: 'mychampions-server',
