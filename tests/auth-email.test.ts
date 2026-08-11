@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app';
 import {
   createEmailAuthGateway,
+  EmailAuthGatewayError,
   LocalEmailAuthGateway,
   UnconfiguredEmailAuthGateway,
 } from '../src/auth/email-auth';
@@ -65,7 +66,7 @@ describe('email auth API', () => {
     expect(gateway).toBeInstanceOf(LocalEmailAuthGateway);
   });
 
-  it('creates and signs in local email credentials by default', async () => {
+  it('creates local email credentials without issuing a session, then allows sign-in', async () => {
     const app = createApp();
     const email = `local-${randomUUID()}@local-email-auth.test`;
     const password = 'Password1!';
@@ -82,14 +83,9 @@ describe('email auth API', () => {
       })
     );
 
-    expect(createResponse.status).toBe(201);
-    const createdSession = await createResponse.json();
-    expect(createdSession.authProviderIds).toEqual(['email_password']);
-    expect(createdSession.profile).toMatchObject({
-      emailNormalized: email,
-      displayName: 'Local Email User',
-    });
-    expect(createdSession.profile.authUid).toStartWith('local_email_');
+    expect(createResponse.status).toBe(202);
+    await expect(createResponse.json()).resolves.toEqual({ status: 'accepted' });
+    expect(createResponse.headers.get('set-cookie')).toBeNull();
 
     const signInResponse = await app.handle(
       new Request('http://server.test/auth/email/sign-in', {
@@ -102,10 +98,10 @@ describe('email auth API', () => {
     expect(signInResponse.status).toBe(201);
     const signInSession = await signInResponse.json();
     expect(signInSession.profile).toMatchObject({
-      authUid: createdSession.profile.authUid,
       emailNormalized: email,
       displayName: 'Local Email User',
     });
+    expect(signInSession.profile.authUid).toStartWith('local_email_');
 
     const invalidPasswordResponse = await app.handle(
       new Request('http://server.test/auth/email/sign-in', {
@@ -119,6 +115,101 @@ describe('email auth API', () => {
     await expect(invalidPasswordResponse.json()).resolves.toMatchObject({
       error: { code: 'invalid_credentials' },
     });
+  });
+
+  it('responds identically to create-account for a duplicate email as for a brand-new one (ET-75)', async () => {
+    const app = createApp();
+    const email = `dup-${randomUUID()}@local-email-auth.test`;
+    const password = 'Password1!';
+    const requestBody = (overrides: Partial<Record<string, string>> = {}) =>
+      JSON.stringify({
+        email,
+        password,
+        displayName: 'Local Email User',
+        ...overrides,
+      });
+
+    const firstResponse = await app.handle(
+      new Request('http://server.test/auth/email/create-account', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: requestBody(),
+      })
+    );
+
+    // A second signup attempt against the same email must be indistinguishable from
+    // the first: same status code, same body shape, and no session/cookie leak that
+    // would let a caller infer "this email already had an account".
+    const secondResponse = await app.handle(
+      new Request('http://server.test/auth/email/create-account', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: requestBody({ password: 'SomeOtherPassword1!' }),
+      })
+    );
+
+    expect(firstResponse.status).toBe(202);
+    expect(secondResponse.status).toBe(202);
+    expect(secondResponse.status).toBe(firstResponse.status);
+
+    const firstBody = await firstResponse.json();
+    const secondBody = await secondResponse.json();
+    expect(firstBody).toEqual({ status: 'accepted' });
+    expect(secondBody).toEqual(firstBody);
+
+    expect(firstResponse.headers.get('set-cookie')).toBeNull();
+    expect(secondResponse.headers.get('set-cookie')).toBeNull();
+
+    // The original account must still be reachable with its original credentials —
+    // the duplicate attempt did not overwrite or otherwise disturb it.
+    const signInResponse = await app.handle(
+      new Request('http://server.test/auth/email/sign-in', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+    );
+    expect(signInResponse.status).toBe(201);
+
+    // And the second (rejected) password must not work, proving no account takeover
+    // happened via the duplicate submission.
+    const impostorSignInResponse = await app.handle(
+      new Request('http://server.test/auth/email/sign-in', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password: 'SomeOtherPassword1!' }),
+      })
+    );
+    expect(impostorSignInResponse.status).toBe(401);
+  });
+
+  it('still returns the generic accepted response when the gateway reports duplicate_email directly', async () => {
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      emailAuthGateway: {
+        async signIn() {
+          throw new Error('signIn should not be called');
+        },
+        async createAccount() {
+          throw new EmailAuthGatewayError('duplicate_email', 'Email is already registered.');
+        },
+      },
+    } as Parameters<typeof createApp>[0] & { emailAuthGateway: unknown });
+
+    const response = await app.handle(
+      new Request('http://server.test/auth/email/create-account', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'existing@example.test',
+          password: 'Password1!',
+          displayName: 'Existing User',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ status: 'accepted' });
   });
 
   it('fails closed when the email auth provider is not configured', async () => {
@@ -186,7 +277,7 @@ describe('email auth API', () => {
     });
   });
 
-  it('passes display name to provider-backed account creation before issuing a session', async () => {
+  it('passes normalized email and trimmed display name to provider-backed account creation', async () => {
     const app = createApp({
       profileRepository: makeProfileRepository(),
       emailAuthGateway: {
@@ -221,15 +312,7 @@ describe('email auth API', () => {
       })
     );
 
-    expect(response.status).toBe(201);
-    await expect(response.json()).resolves.toMatchObject({
-      authProviderIds: ['email_password'],
-      emailVerified: false,
-      profile: {
-        authUid: 'provider-new-user',
-        emailNormalized: 'new@example.test',
-        displayName: 'New User',
-      },
-    });
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ status: 'accepted' });
   });
 });
