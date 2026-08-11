@@ -2269,6 +2269,17 @@ export function createApp(deps: CreateAppDeps = {}) {
             connection.professionalAuthUid === auth.sub &&
             connection.studentAuthUid === params.studentUid
         );
+
+        if (relevant.length === 0) {
+          set.status = 403;
+          return {
+            error: {
+              code: 'assignment_snapshot_forbidden',
+              message: 'A connection to this student is required to read their assignment snapshot.',
+            },
+          };
+        }
+
         const summary = summarizeStudentConnections(relevant);
         const profile = await profileRepository.findByAuthUid(params.studentUid);
 
