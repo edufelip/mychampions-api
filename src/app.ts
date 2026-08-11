@@ -3576,7 +3576,22 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .get(
       '/media/custom-meal-images/:ownerAuthUid/:mealId/:filename',
-      async ({ params, set }) => {
+      async ({ auth, params, set }) => {
+        if (!auth?.sub) {
+          set.status = 401;
+          return { error: { code: 'unauthorized', message: 'Missing or invalid bearer token.' } };
+        }
+
+        if (auth.sub !== params.ownerAuthUid) {
+          set.status = 403;
+          return {
+            error: {
+              code: 'custom_meal_image_forbidden',
+              message: 'You do not have access to this custom meal image.',
+            },
+          };
+        }
+
         try {
           const stored = await mealImageStorage.read(params);
           if (!stored) {
