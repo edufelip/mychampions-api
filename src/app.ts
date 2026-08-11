@@ -45,6 +45,7 @@ import {
 import { PostgresRefreshSessionRepository } from './auth/postgres-refresh-session-repository';
 import {
   InMemoryPasswordResetService,
+  PasswordResetConfirmError,
   type PasswordResetService,
 } from './auth/password-reset';
 import { PostgresPasswordResetService } from './auth/postgres-password-reset';
@@ -441,6 +442,8 @@ function emailAuthGatewayErrorResponse(error: unknown, set: { status?: number | 
     set.status = 503;
   } else if (error.code === 'invalid_credentials') {
     set.status = 401;
+  } else if (error.code === 'account_not_found') {
+    set.status = 404;
   } else {
     set.status = 409;
   }
@@ -483,6 +486,21 @@ function passwordResetDeliveryGatewayErrorResponse(
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+    },
+  };
+}
+
+function passwordResetConfirmErrorResponse(error: unknown, set: { status?: number | string }) {
+  if (!(error instanceof PasswordResetConfirmError)) {
+    throw error;
+  }
+
+  set.status = 400;
 
   return {
     error: {
@@ -1677,6 +1695,47 @@ export function createApp(deps: CreateAppDeps = {}) {
       {
         body: t.Object({
           email: t.String({ minLength: 1 }),
+        }),
+      }
+    )
+    .post(
+      '/auth/password-reset/confirm',
+      async ({ body, set }) => {
+        const emailNormalized = normalizeEmail(body.email);
+        if (!isEmailLike(emailNormalized)) {
+          set.status = 400;
+          return { error: { code: 'invalid_email', message: 'Email is invalid.' } };
+        }
+
+        try {
+          await passwordResetService.confirm({
+            emailNormalized,
+            token: body.token,
+          });
+        } catch (error) {
+          return passwordResetConfirmErrorResponse(error, set);
+        }
+
+        let updateResult: { authUid: string };
+        try {
+          updateResult = await emailAuthGateway.updatePassword({
+            email: emailNormalized,
+            newPassword: body.newPassword,
+          });
+        } catch (error) {
+          return emailAuthGatewayErrorResponse(error, set);
+        }
+
+        await refreshSessionService.revokeAllForAuthUid(updateResult.authUid);
+
+        set.status = 200;
+        return { status: 'reset' };
+      },
+      {
+        body: t.Object({
+          email: t.String({ minLength: 1 }),
+          token: t.String({ minLength: 1 }),
+          newPassword: t.String({ minLength: 1 }),
         }),
       }
     )

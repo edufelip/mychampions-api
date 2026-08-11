@@ -210,6 +210,7 @@ The current local migration slice covers mobile server boundaries now owned by t
 - `POST /auth/email/create-account`
 - `POST /auth/social/sign-in`
 - `POST /auth/password-reset`
+- `POST /auth/password-reset/confirm`
 - `GET /me`
 - `POST /subscription/entitlements/snapshot`
 - `POST /webhooks/revenuecat`
@@ -313,6 +314,8 @@ other direct data.
 `POST /auth/social/sign-in` is the server-owned Google/Apple auth exchange boundary. Mobile continues native Google/Apple token capture and posts the captured token here before using deterministic local social sessions only for explicit provider-token configuration gaps in local development. The route accepts `provider`, provider `idToken`, and optional `accessToken`/`nonce`, verifies the token directly against the provider's JWKS, and requires the configured audience, issuer, subject, signature, and expiry. Google requires a verified email on every sign-in. Apple requires a verified email for first identity creation, while a returning signed Apple token without email is resolved only through its stored provider subject. Google audiences come from `GOOGLE_ANDROID_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`, and `GOOGLE_WEB_CLIENT_ID`; Apple audiences come from `APPLE_CLIENT_ID` and `APPLE_WEB_CLIENT_ID`. The route returns `configuration` with HTTP 503 until the requested provider audience is configured.
 
 `POST /auth/password-reset` accepts a normalized email address and records a provider-neutral local password-reset request in local Postgres table `password_reset_requests` through the server-owned password-reset service. The canonical request row stores only the SHA-256 token digest plus `expires_at`, and the HTTP response stays `{ "status": "accepted" }` without exposing provider, token, or delivery details. For local development, the server also writes a `password_reset_delivery_artifacts` debug-outbox row with the raw reset token and `mychampions://auth/password-reset?...` reset URL so the local flow can be inspected without remote email delivery. Direct transactional delivery stays disabled until its own transport credentials are configured.
+
+`POST /auth/password-reset/confirm` accepts `{ email, token, newPassword }` and completes a password reset. The server-owned password-reset service atomically verifies the submitted token's SHA-256 digest against the stored `password_reset_requests` row for that email, requires the row still be `pending` and unexpired, and marks it `consumed` in the same conditional update so a token can be redeemed at most once; an invalid, expired, or already-consumed token returns `400 invalid_or_expired_token` without touching any account. Only after that token is consumed does the route hash the new password with Argon2id and update the matching `local_email_auth_credentials` row, then revoke every existing `auth_sessions` row for that account so a stolen session cannot outlive the reset. A successful reset returns `{ "status": "reset" }`.
 
 `POST /support/messages` stores write-only support requests in local Postgres table `support_messages`. The mobile client sends subject/body plus app metadata; the server derives authenticated user metadata from the bearer token and stores new messages with `status='pending'`.
 
