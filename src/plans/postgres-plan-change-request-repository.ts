@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, type SQL } from 'drizzle-orm';
 
-import { nutritionPlans, planChangeRequests, trainingPlans, type PlanChangeRequestRow } from '../db/schema';
+import { connections, nutritionPlans, planChangeRequests, trainingPlans, type PlanChangeRequestRow } from '../db/schema';
 import type {
   CreatePlanChangeRequestInput,
   ListPlanChangeRequestsForProfessionalInput,
@@ -10,7 +10,7 @@ import type {
   PlanChangeRequestRepository,
   ReviewPlanChangeRequestInput,
 } from './plan-change-request-repository';
-import { PlanChangeRequestNotFoundError } from './plan-change-request-repository';
+import { PlanChangeRequestForbiddenError, PlanChangeRequestNotFoundError } from './plan-change-request-repository';
 
 type Db = {
   insert: Function;
@@ -69,7 +69,20 @@ export class PostgresPlanChangeRequestRepository implements PlanChangeRequestRep
   }
 
   async listForStudent(input: ListPlanChangeRequestsForStudentInput): Promise<PlanChangeRequest[]> {
-    void input.professionalAuthUid;
+    const [activeConnection] = await this.db
+      .select({ id: connections.id })
+      .from(connections)
+      .where(and(
+        eq(connections.professionalAuthUid, input.professionalAuthUid),
+        eq(connections.studentAuthUid, input.studentAuthUid),
+        eq(connections.status, 'active')
+      ))
+      .limit(1);
+
+    if (!activeConnection) {
+      return [];
+    }
+
     const rows = await this.db
       .select()
       .from(planChangeRequests)
@@ -110,7 +123,30 @@ export class PostgresPlanChangeRequestRepository implements PlanChangeRequestRep
   }
 
   async review(input: ReviewPlanChangeRequestInput): Promise<{ id: string; status: 'reviewed' | 'dismissed' }> {
-    void input.professionalAuthUid;
+    const [existing] = await this.db
+      .select({
+        planId: planChangeRequests.planId,
+        planType: planChangeRequests.planType,
+      })
+      .from(planChangeRequests)
+      .where(eq(planChangeRequests.id, input.requestId))
+      .limit(1);
+
+    if (!existing) {
+      throw new PlanChangeRequestNotFoundError();
+    }
+
+    const ownerTable = existing.planType === 'nutrition' ? nutritionPlans : trainingPlans;
+    const [plan] = await this.db
+      .select({ ownerProfessionalUid: ownerTable.ownerProfessionalUid })
+      .from(ownerTable)
+      .where(eq(ownerTable.id, existing.planId))
+      .limit(1);
+
+    if (!plan || plan.ownerProfessionalUid !== input.professionalAuthUid) {
+      throw new PlanChangeRequestForbiddenError();
+    }
+
     const [row] = await this.db
       .update(planChangeRequests)
       .set({

@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 
 import { createDatabase } from '../src/db/client';
+import { PlanChangeRequestForbiddenError } from '../src/plans/plan-change-request-repository';
 import { PostgresPlanChangeRequestRepository } from '../src/plans/postgres-plan-change-request-repository';
 
 const databaseUrl =
@@ -11,7 +12,7 @@ const database = createDatabase(databaseUrl);
 const repository = new PostgresPlanChangeRequestRepository(database.db);
 
 beforeEach(async () => {
-  await database.client`truncate table plan_change_requests, nutrition_plans, training_plans`;
+  await database.client`truncate table plan_change_requests, nutrition_plans, training_plans, connections`;
 });
 
 afterAll(async () => {
@@ -138,5 +139,108 @@ describe('PostgresPlanChangeRequestRepository', () => {
 
     expect(requests.map((request) => request.id)).toEqual(['request-new-owned', 'request-old-owned']);
     expect(requests.map((request) => request.studentUid)).toEqual(['student-3', 'student-1']);
+  });
+
+  it('does not let an unconnected professional list a student plan change requests', async () => {
+    await database.client`
+      insert into plan_change_requests (
+        id, plan_id, plan_type, student_auth_uid, request_text, status, created_at, updated_at
+      ) values (
+        'request-1', 'nutrition-self-managed', 'nutrition', 'student-1', 'Please remove dairy.',
+        'pending', '2026-06-29T10:00:00.000Z', '2026-06-29T10:00:00.000Z'
+      )
+    `;
+
+    const requests = await repository.listForStudent({
+      professionalAuthUid: 'professional-unconnected',
+      studentAuthUid: 'student-1',
+    });
+
+    expect(requests).toEqual([]);
+  });
+
+  it('lets a professional with an active connection to the student list their plan change requests', async () => {
+    await database.client`
+      insert into connections (
+        id, status, specialty, professional_auth_uid, student_auth_uid, created_at, updated_at
+      ) values (
+        'connection-1', 'active', 'nutritionist', 'professional-1', 'student-1',
+        '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z'
+      )
+    `;
+    await database.client`
+      insert into plan_change_requests (
+        id, plan_id, plan_type, student_auth_uid, request_text, status, created_at, updated_at
+      ) values (
+        'request-1', 'nutrition-self-managed', 'nutrition', 'student-1', 'Please remove dairy.',
+        'pending', '2026-06-29T10:00:00.000Z', '2026-06-29T10:00:00.000Z'
+      )
+    `;
+
+    const requests = await repository.listForStudent({
+      professionalAuthUid: 'professional-1',
+      studentAuthUid: 'student-1',
+    });
+
+    expect(requests.map((request) => request.id)).toEqual(['request-1']);
+  });
+
+  it('does not let a professional who does not own the underlying plan review a change request', async () => {
+    await database.client`
+      insert into nutrition_plans (
+        id, student_auth_uid, owner_professional_uid, source_kind, is_archived, is_draft,
+        name, created_at, updated_at
+      ) values (
+        'nutrition-owned', 'student-1', 'professional-owner', 'assigned', false, false,
+        'Owned Nutrition', '2026-06-28T10:00:00.000Z', '2026-06-28T10:00:00.000Z'
+      )
+    `;
+    await database.client`
+      insert into plan_change_requests (
+        id, plan_id, plan_type, student_auth_uid, request_text, status, created_at, updated_at
+      ) values (
+        'request-1', 'nutrition-owned', 'nutrition', 'student-1', 'Please adjust dinner.',
+        'pending', '2026-06-29T10:00:00.000Z', '2026-06-29T10:00:00.000Z'
+      )
+    `;
+
+    await expect(
+      repository.review({
+        professionalAuthUid: 'professional-unrelated',
+        requestId: 'request-1',
+        status: 'reviewed',
+      })
+    ).rejects.toBeInstanceOf(PlanChangeRequestForbiddenError);
+
+    const [row] = await database.client`select status from plan_change_requests where id = 'request-1'`;
+    expect(row.status).toBe('pending');
+  });
+
+  it('lets the owning professional review a plan change request', async () => {
+    await database.client`
+      insert into nutrition_plans (
+        id, student_auth_uid, owner_professional_uid, source_kind, is_archived, is_draft,
+        name, created_at, updated_at
+      ) values (
+        'nutrition-owned', 'student-1', 'professional-owner', 'assigned', false, false,
+        'Owned Nutrition', '2026-06-28T10:00:00.000Z', '2026-06-28T10:00:00.000Z'
+      )
+    `;
+    await database.client`
+      insert into plan_change_requests (
+        id, plan_id, plan_type, student_auth_uid, request_text, status, created_at, updated_at
+      ) values (
+        'request-1', 'nutrition-owned', 'nutrition', 'student-1', 'Please adjust dinner.',
+        'pending', '2026-06-29T10:00:00.000Z', '2026-06-29T10:00:00.000Z'
+      )
+    `;
+
+    const result = await repository.review({
+      professionalAuthUid: 'professional-owner',
+      requestId: 'request-1',
+      status: 'reviewed',
+    });
+
+    expect(result).toEqual({ id: 'request-1', status: 'reviewed' });
   });
 });
