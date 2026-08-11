@@ -376,9 +376,21 @@ describe('POST /auth/password-reset/confirm', () => {
           body: JSON.stringify({ email, password: oldPassword, displayName: 'Reset User' }),
         })
       );
-      expect(createResponse.status).toBe(201);
-      const created = await createResponse.json();
-      const oldRefreshToken = created.refreshToken as string;
+      expect(createResponse.status).toBe(202);
+
+      // create-account no longer issues a session (ET-75); sign in with the
+      // just-created credentials to obtain the "old" session this test later
+      // proves gets revoked by the password reset.
+      const initialSignIn = await app.handle(
+        new Request('http://server.test/auth/email/sign-in', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password: oldPassword }),
+        })
+      );
+      expect(initialSignIn.status).toBe(201);
+      const signedIn = await initialSignIn.json();
+      const oldRefreshToken = signedIn.refreshToken as string;
 
       const requestResponse = await app.handle(
         new Request('http://server.test/auth/password-reset', {
