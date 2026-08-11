@@ -32,6 +32,7 @@ export interface RefreshSessionRepository {
     refreshTokenDigest: string;
     now: Date;
   }): Promise<boolean>;
+  revokeAllForAuthUid(input: { authUid: string; now: Date }): Promise<void>;
 }
 
 export class InvalidRefreshTokenError extends Error {
@@ -97,6 +98,14 @@ export class InMemoryRefreshSessionRepository implements RefreshSessionRepositor
     }
     this.sessions.set(current.id, { ...current, revokedAt: input.now });
     return true;
+  }
+
+  async revokeAllForAuthUid(input: { authUid: string; now: Date }): Promise<void> {
+    for (const session of this.sessions.values()) {
+      if (session.authUid === input.authUid && !session.revokedAt) {
+        this.sessions.set(session.id, { ...session, revokedAt: input.now });
+      }
+    }
   }
 }
 
@@ -171,6 +180,10 @@ export class RefreshSessionService {
       refreshTokenDigest: digestRefreshToken(refreshToken),
       now: this.now(),
     });
+  }
+
+  async revokeAllForAuthUid(authUid: string): Promise<void> {
+    await this.repository.revokeAllForAuthUid({ authUid, now: this.now() });
   }
 
   private async createRefreshSession(claims: AuthClaims): Promise<{

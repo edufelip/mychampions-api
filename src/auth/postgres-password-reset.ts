@@ -1,11 +1,15 @@
+import { and, eq, gt } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 
 import { passwordResetDeliveryArtifacts, passwordResetRequests } from '../db/schema';
 import {
   DEFAULT_PASSWORD_RESET_TTL_MS,
+  PasswordResetConfirmError,
   createPasswordResetDeliveryArtifact,
   createPasswordResetToken,
   digestPasswordResetToken,
+  type PasswordResetConfirmInput,
+  type PasswordResetConfirmResult,
   type PasswordResetRequestInput,
   type PasswordResetRequestResult,
   type PasswordResetService,
@@ -14,6 +18,7 @@ import {
 
 type Db = {
   insert: Function;
+  update: Function;
 };
 
 export class PostgresPasswordResetService implements PasswordResetService {
@@ -69,5 +74,32 @@ export class PostgresPasswordResetService implements PasswordResetService {
       resetToken,
       expiresAt: expiresAtIso,
     };
+  }
+
+  async confirm(input: PasswordResetConfirmInput): Promise<PasswordResetConfirmResult> {
+    const now = this.options.now?.() ?? new Date();
+    const tokenDigest = digestPasswordResetToken(input.token);
+
+    const [row] = await this.db
+      .update(passwordResetRequests)
+      .set({ status: 'consumed', consumedAt: now })
+      .where(
+        and(
+          eq(passwordResetRequests.emailNormalized, input.emailNormalized),
+          eq(passwordResetRequests.tokenDigest, tokenDigest),
+          eq(passwordResetRequests.status, 'pending'),
+          gt(passwordResetRequests.expiresAt, now)
+        )
+      )
+      .returning({ id: passwordResetRequests.id });
+
+    if (!row) {
+      throw new PasswordResetConfirmError(
+        'invalid_or_expired_token',
+        'Password reset token is invalid or expired.'
+      );
+    }
+
+    return { requestId: row.id };
   }
 }

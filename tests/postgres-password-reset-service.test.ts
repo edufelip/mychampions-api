@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 
+import { PasswordResetConfirmError } from '../src/auth/password-reset';
 import { PostgresPasswordResetService } from '../src/auth/postgres-password-reset';
 import { createDatabase } from '../src/db/client';
 
@@ -86,5 +87,56 @@ describe('PostgresPasswordResetService', () => {
     });
     expect(new Date(rows[0].expires_at).toISOString()).toBe('2026-07-03T12:15:00.000Z');
     expect(new Date(rows[0].created_at).toISOString()).toBe('2026-07-03T12:00:00.000Z');
+  });
+
+  it('atomically consumes a pending token exactly once and rejects replay', async () => {
+    const service = new PostgresPasswordResetService(database.db, {
+      now: () => new Date('2026-07-03T12:00:00.000Z'),
+      tokenFactory: () => 'raw-reset-token',
+      ttlMs: 15 * 60 * 1000,
+    });
+    const requested = await service.request({ emailNormalized: 'user@example.test' });
+
+    const confirmed = await service.confirm({
+      emailNormalized: 'user@example.test',
+      token: 'raw-reset-token',
+    });
+
+    expect(confirmed).toEqual({ requestId: requested.requestId });
+
+    const rows = await database.client`
+      select id, status, consumed_at
+      from password_reset_requests
+      where id = ${requested.requestId}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('consumed');
+    expect(new Date(rows[0].consumed_at).toISOString()).toBe('2026-07-03T12:00:00.000Z');
+
+    await expect(
+      service.confirm({ emailNormalized: 'user@example.test', token: 'raw-reset-token' })
+    ).rejects.toThrow(PasswordResetConfirmError);
+  });
+
+  it('rejects an expired token without consuming it', async () => {
+    const service = new PostgresPasswordResetService(database.db, {
+      now: () => new Date('2026-07-03T12:00:00.000Z'),
+      tokenFactory: () => 'raw-reset-token',
+      ttlMs: 15 * 60 * 1000,
+    });
+    const requested = await service.request({ emailNormalized: 'user@example.test' });
+
+    const lateService = new PostgresPasswordResetService(database.db, {
+      now: () => new Date('2026-07-03T12:16:00.000Z'),
+    });
+
+    await expect(
+      lateService.confirm({ emailNormalized: 'user@example.test', token: 'raw-reset-token' })
+    ).rejects.toThrow(PasswordResetConfirmError);
+
+    const rows = await database.client`
+      select status from password_reset_requests where id = ${requested.requestId}
+    `;
+    expect(rows[0].status).toBe('pending');
   });
 });
