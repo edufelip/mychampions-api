@@ -265,6 +265,48 @@ describe('professional students API', () => {
     });
   });
 
+  it('forbids assignment snapshot reads when the only connection is invited or ended, not active/pending', async () => {
+    const professionalAuthUid = authUidForEmail('professional@example.test');
+    const app = createApp({
+      profileRepository: makeProfileRepository([
+        makeProfile({ authUid: 'student-b', displayName: 'Ben Both' }),
+      ]),
+      supportMessageRepository,
+      connectionRepository: makeConnectionRepository([
+        makeConnection({
+          id: 'connection-b-invited',
+          professionalAuthUid,
+          studentAuthUid: 'student-b',
+          specialty: 'nutritionist',
+          status: 'invited',
+        }),
+        makeConnection({
+          id: 'connection-b-ended',
+          professionalAuthUid,
+          studentAuthUid: 'student-b',
+          specialty: 'fitness_coach',
+          status: 'ended',
+        }),
+      ]),
+    });
+    const session = await issueProfessionalSession(app);
+    expect(session.profile.authUid).toBe(professionalAuthUid);
+
+    const response = await app.handle(
+      new Request('http://server.test/professional/students/student-b/assignment-snapshot', {
+        headers: { authorization: `Bearer ${session.accessToken}` },
+      })
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: 'assignment_snapshot_forbidden',
+        message: 'A connection to this student is required to read their assignment snapshot.',
+      },
+    });
+  });
+
   it('forbids assignment snapshot reads for a student with no connections at all', async () => {
     const professionalAuthUid = authUidForEmail('professional@example.test');
     const app = createApp({

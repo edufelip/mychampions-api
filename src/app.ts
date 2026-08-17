@@ -2398,7 +2398,8 @@ export function createApp(deps: CreateAppDeps = {}) {
         const relevant = connections.filter(
           (connection) =>
             connection.professionalAuthUid === auth.sub &&
-            connection.studentAuthUid === params.studentUid
+            connection.studentAuthUid === params.studentUid &&
+            (connection.status === 'active' || connection.status === 'pending_confirmation')
         );
 
         if (relevant.length === 0) {
