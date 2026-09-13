@@ -1,0 +1,40 @@
+name: mychampions-dev-server
+
+x-server-base: &server-base
+  image: ${IMAGE_REPOSITORY:?IMAGE_REPOSITORY is required}:${IMAGE_TAG:?IMAGE_TAG is required}
+  env_file: /opt/mychampions-dev-server/shared/.env
+  networks:
+    - root_default
+  volumes:
+    - mychampions-dev-server-storage:/app/.local-storage
+  healthcheck:
+    test:
+      - CMD
+      - bun
+      - -e
+      - "fetch('http://127.0.0.1:3400/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+    interval: 15s
+    timeout: 5s
+    retries: 8
+    start_period: 20s
+
+services:
+  migrate:
+    <<: *server-base
+    container_name: mychampions-dev-server-migrate
+    command: ["bun", "run", "db:migrate"]
+    restart: "no"
+
+  app:
+    <<: *server-base
+    container_name: mychampions-dev-server
+    ports:
+      - "127.0.0.1:3402:3400"
+    restart: unless-stopped
+
+networks:
+  root_default:
+    external: true
+
+volumes:
+  mychampions-dev-server-storage:
