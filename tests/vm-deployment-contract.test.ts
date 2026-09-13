@@ -207,4 +207,54 @@ describe('VM deployment contract', () => {
     expect(bootstrap).toContain('.active_slot');
     expect(bootstrap).toContain('--resolve');
   });
+
+  it('keeps Firebase-distribution Dev API/database deployment separate from production', async () => {
+    const compose = await readFile(
+      join(serverRoot, 'infra', 'dev', 'docker-compose.vm.yml'),
+      'utf8'
+    );
+    const provision = await readFile(
+      join(serverRoot, 'infra', 'scripts', 'provision-dev-vm-db.sh'),
+      'utf8'
+    );
+    const ingress = await readFile(
+      join(serverRoot, 'infra', 'scripts', 'bootstrap-dev-ingress.sh'),
+      'utf8'
+    );
+    const deploy = await readFile(
+      join(serverRoot, 'infra', 'scripts', 'deploy-dev-vm.sh'),
+      'utf8'
+    );
+
+    expect(compose).toContain('name: mychampions-dev-server');
+    expect(compose).toContain('127.0.0.1:3402:3400');
+    expect(compose).toContain('/opt/mychampions-dev-server/shared/.env');
+    expect(compose).toContain('mychampions-dev-server-storage');
+    expect(compose).not.toContain('mychampions-gcs-service-account.json');
+    expect(provision).toContain('mychampions_dev');
+    expect(provision).toContain('mychampions_dev_user');
+    expect(provision).toContain('mychampions_dev_catalog_reader');
+    expect(provision).toContain('NODE_ENV=development');
+    expect(provision).toContain('APP_VARIANT=dev');
+    expect(provision).toContain('LOCAL_DEV_AUTH_ENABLED=false');
+    expect(provision).toContain('NOSUPERUSER NOCREATEDB NOCREATEROLE');
+    expect(ingress).toContain('127.0.0.1:3402');
+    expect(deploy).toContain('run --rm migrate');
+    expect(deploy).toContain('docker compose -f "$compose_file" up -d app');
+    expect(deploy).not.toContain('mychampions-server-blue');
+    expect(deploy).not.toContain('mychampions-server-green');
+  });
+
+  it('defaults Dev provisioning to no-write mode and refuses an alternate target', async () => {
+    const dryRun = await runScript('infra/scripts/provision-dev-vm-db.sh');
+    const unsafeHost = await runScript('infra/scripts/provision-dev-vm-db.sh', {
+      env: { MYCHAMPIONS_DEV_VM_SSH_HOST: 'unsafe-host' },
+    });
+
+    expect(dryRun.exitCode).toBe(0);
+    expect(dryRun.stdout).toContain('Dry run only. No VM state will change.');
+    expect(dryRun.stdout).toContain('mychampions_dev');
+    expect(unsafeHost.exitCode).toBe(1);
+    expect(unsafeHost.stderr).toContain('target does not match the approved Dev VM');
+  });
 });

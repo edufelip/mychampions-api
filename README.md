@@ -199,6 +199,48 @@ and image ID were verified.
 certificate for `PUBLIC_DOMAIN`; it redirects HTTP to HTTPS and proxies both
 the health route and API traffic to the active loopback slot.
 
+### Firebase distribution Dev API
+
+Firebase App Distribution receives only the `MyChampions Dev` mobile identities.
+Those builds must not point at the production API or database. The Dev runtime
+is isolated by an independent `mychampions_dev` database, non-superuser roles,
+JWT signing material, local-only media volume, container name, loopback port
+`3402`, and Nginx site. It may read the public food/exercise catalog through a
+read-only catalog role; it cannot use the production MyChampions database or
+GCS service-account mount.
+
+The Dev database provisioning script refuses alternate VM, container, database,
+or environment-file paths and defaults to no-write mode. Pass the public native
+OAuth audience values only when applying it; no server or provider secret is
+accepted from this command.
+
+```bash
+DEV_GOOGLE_ANDROID_CLIENT_ID=<android-client-id> \
+DEV_GOOGLE_IOS_CLIENT_ID=<ios-client-id> \
+DEV_GOOGLE_WEB_CLIENT_ID=<web-client-id> \
+DEV_APPLE_CLIENT_ID=com.edufelip.mychampions.dev \
+  bash infra/scripts/provision-dev-vm-db.sh --apply
+```
+
+For the existing VM, `dev.165.22.147.90.sslip.io` resolves directly to the VM
+without a production-DNS change. Before enabling the mobile CI secret, build and
+transfer an immutable `linux/amd64` image, extract the reviewed revision under
+`/opt/mychampions-dev-server/revisions/<revision>`, then bootstrap Dev-only TLS
+and deploy from that revision. The commands never replace production slots.
+
+```bash
+PUBLIC_DOMAIN=dev.165.22.147.90.sslip.io CERTBOT_EMAIL=<ops-email> \
+  sudo bash infra/scripts/bootstrap-dev-ingress.sh --apply
+
+sudo PUBLIC_DOMAIN=dev.165.22.147.90.sslip.io \
+  IMAGE_REPOSITORY=mychampions-dev-server IMAGE_TAG=<immutable-tag> IMAGE_PULL=false \
+  bash infra/scripts/deploy-dev-vm.sh
+```
+
+The `sslip.io` endpoint is an operational Dev convenience tied to this VM's
+public IP, not a production API hostname. A VM replacement requires explicit
+endpoint, certificate, and GitHub `ENV_FILE` updates before another distribution.
+
 ## Current API Slice
 
 The current local migration slice covers mobile server boundaries now owned by the MyChampions server:
