@@ -365,6 +365,22 @@ The credential-adjacent routes — `POST /auth/dev/session`, `POST /auth/email/s
 
 `POST /support/messages` stores write-only support requests in local Postgres table `support_messages`. The mobile client sends subject/body plus app metadata; the server derives authenticated user metadata from the bearer token and stores new messages with `status='pending'`.
 
+Every normal support submission includes an opaque `Idempotency-Key` header. The
+server serializes its PostgreSQL decision per authenticated user, checks a prior
+`(auth_uid, idempotency_key)` result before quota evaluation, and returns that
+original result for a replay. It accepts at most three messages in a rolling
+fifteen-minute window and ten in a rolling twenty-four-hour window. A limit
+rejection inserts no support row and returns `429` with
+`error.code='support_rate_limited'` plus a whole-second `Retry-After` header.
+Logs contain the outcome only (`accepted`, `replayed`, `limited`, or `failed`),
+never support content, account identifiers, or idempotency keys.
+
+Production ingress installs `infra/nginx/mychampions-server-rate-limits.conf`
+into Nginx's `http` context and applies its deliberately higher coarse per-IP
+guard only to `/support/messages`. It keys the guard from
+`$binary_remote_addr`, not forwarding headers supplied by the client. The
+server's authenticated PostgreSQL quota remains the authoritative enforcement.
+
 `POST /analytics/events` accepts unauthenticated provider-neutral mobile analytics events and stores them in local Postgres table `analytics_events`. The route is intentionally available before auth so auth-entry events can be captured, but it rejects any event properties containing sensitive keys such as email, tokens, passwords, invite codes, or secrets. The mobile analytics hook sends redacted best-effort events to this route when `EXPO_PUBLIC_MYCHAMPIONS_SERVER_URL` or Expo `extra.server.baseUrl` is configured.
 
 Outside production, `POST /subscription/entitlements/snapshot` stores the authenticated user's latest RevenueCat-derived entitlement state in local Postgres table `subscription_entitlement_snapshots`. `GET /subscription/entitlements/snapshot` returns that authenticated user's latest local snapshot or `null` when none exists. The mobile subscription hook still presents native RevenueCat paywalls and reads store-backed customer info locally, then best-effort syncs `professionalEntitlementStatus`, `aiEntitlementStatus`, optional active-student count, professional entitlement expiry, renewal-risk state, and observation time to the MyChampions server for local development. The server validates expiry timestamps and keeps only strictly newer observations, so a delayed retry cannot roll a user back to an older entitlement state. Production rejects client snapshot writes with HTTP 403; cap and AI-access enforcement there must use the signed RevenueCat webhook snapshot. When native entitlement reads are unavailable during local development, the hook can hydrate from the server-owned local snapshot so local gates can continue without remote RevenueCat credentials.

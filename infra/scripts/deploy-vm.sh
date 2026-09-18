@@ -8,9 +8,11 @@ compose_file="$infra_directory/docker-compose.vm.yml"
 env_file="$infra_directory/.env"
 gcs_credentials_file="$infra_directory/secrets/mychampions-gcs-service-account.json"
 nginx_template="$infra_directory/nginx/mychampions-server.conf"
+nginx_rate_limit_config="$infra_directory/nginx/mychampions-server-rate-limits.conf"
 nginx_site="/etc/nginx/sites-available/mychampions-server"
 nginx_enabled="/etc/nginx/sites-enabled/mychampions-server"
 nginx_upstream_snippet="/etc/nginx/snippets/mychampions-server-upstream.conf"
+nginx_rate_limit_destination="/etc/nginx/conf.d/mychampions-server-rate-limits.conf"
 active_slot_file="$infra_directory/.active_slot"
 public_domain="${PUBLIC_DOMAIN:-}"
 image_repository="${IMAGE_REPOSITORY:-}"
@@ -37,7 +39,7 @@ if [[ "$image_pull" != "true" && "$image_pull" != "false" ]]; then
   exit 1
 fi
 
-for required_file in "$compose_file" "$env_file" "$gcs_credentials_file" "$nginx_template"; do
+for required_file in "$compose_file" "$env_file" "$gcs_credentials_file" "$nginx_template" "$nginx_rate_limit_config"; do
   if [[ ! -f "$required_file" ]]; then
     echo "Missing deployment prerequisite: $required_file" >&2
     exit 1
@@ -175,6 +177,8 @@ if ! curl --fail --silent "http://127.0.0.1:${target_port}/health" >/dev/null; t
 fi
 
 sudo install -d -m 755 /etc/nginx/snippets
+sudo install -d -m 755 /etc/nginx/conf.d
+sudo install -m 644 "$nginx_rate_limit_config" "$nginx_rate_limit_destination"
 sed "s/__PUBLIC_DOMAIN__/$public_domain/g" "$nginx_template" | sudo tee "$nginx_site" >/dev/null
 sudo ln -sfn "$nginx_site" "$nginx_enabled"
 printf 'set $mychampions_server_upstream http://127.0.0.1:%s;\n' "$target_port" | sudo tee "$nginx_upstream_snippet" >/dev/null

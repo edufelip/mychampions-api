@@ -4,9 +4,11 @@ set -euo pipefail
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 infra_directory="$(cd "$script_directory/.." && pwd)"
 nginx_template="$infra_directory/nginx/mychampions-server.conf"
+nginx_rate_limit_config="$infra_directory/nginx/mychampions-server-rate-limits.conf"
 nginx_site="/etc/nginx/sites-available/mychampions-server"
 nginx_enabled="/etc/nginx/sites-enabled/mychampions-server"
 nginx_upstream_snippet="/etc/nginx/snippets/mychampions-server-upstream.conf"
+nginx_rate_limit_destination="/etc/nginx/conf.d/mychampions-server-rate-limits.conf"
 active_slot_file="$infra_directory/.active_slot"
 acme_site="/etc/nginx/sites-available/mychampions-server-acme"
 acme_enabled="/etc/nginx/sites-enabled/mychampions-server-acme"
@@ -48,8 +50,8 @@ if [[ -z "$public_domain" || ! "$public_domain" =~ ^[a-z0-9.-]+$ ]]; then
   exit 1
 fi
 
-if [[ ! -f "$nginx_template" ]]; then
-  echo "Missing Nginx template: $nginx_template" >&2
+if [[ ! -f "$nginx_template" || ! -f "$nginx_rate_limit_config" ]]; then
+  echo "Missing Nginx ingress configuration." >&2
   exit 1
 fi
 
@@ -170,6 +172,8 @@ fi
 sed "s/__PUBLIC_DOMAIN__/$public_domain/g" "$nginx_template" >"$nginx_site"
 ln -sfn "$nginx_site" "$nginx_enabled"
 install -d -m 755 /etc/nginx/snippets
+install -d -m 755 /etc/nginx/conf.d
+install -m 644 "$nginx_rate_limit_config" "$nginx_rate_limit_destination"
 printf 'set $mychampions_server_upstream http://127.0.0.1:%s;\n' "$active_port" >"$nginx_upstream_snippet"
 nginx -t
 systemctl reload nginx

@@ -166,6 +166,13 @@ type CreateAppDeps = {
 const LOCAL_ACCESS_TOKEN_COOKIE = 'mychampions_access_token';
 const WEB_REFRESH_TOKEN_COOKIE = 'mychampions_refresh_token';
 const MAX_MEAL_PHOTO_ANALYSIS_IMAGE_BASE64_LENGTH = 6_000_000;
+const SUPPORT_IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._-]{16,200}$/;
+
+function recordSupportSubmission(outcome: 'accepted' | 'limited' | 'replayed' | 'failed') {
+  // Intentionally excludes message content and account identity. Aggregators can
+  // count outcomes without turning support messages into telemetry payloads.
+  console.info(JSON.stringify({ event: 'support_submission', outcome }));
+}
 
 // Credential-adjacent routes that accept unauthenticated requests: brute-force,
 // credential-stuffing, and email-bombing surfaces that need a per-IP throttle.
@@ -1442,8 +1449,8 @@ export function createApp(deps: CreateAppDeps = {}) {
           return origin !== null && config.allowedWebOrigins.includes(origin);
         },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-        exposeHeaders: ['X-Request-ID'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-ID'],
+        exposeHeaders: ['Retry-After', 'X-Request-ID'],
         credentials: true,
         maxAge: 600,
       })
@@ -4174,7 +4181,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .post(
       '/support/messages',
-      async ({ auth, body, set }) => {
+      async ({ auth, body, headers, set }) => {
         if (!auth?.sub) {
           set.status = 401;
           return { error: { code: 'unauthorized', message: 'Missing or invalid bearer token.' } };
@@ -4192,7 +4199,18 @@ export function createApp(deps: CreateAppDeps = {}) {
           };
         }
 
-        const message = await supportMessageRepository.create({
+        const idempotencyKey = headers['idempotency-key']?.trim();
+        if (!idempotencyKey || !SUPPORT_IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+          set.status = 400;
+          return {
+            error: {
+              code: 'invalid_idempotency_key',
+              message: 'A valid Idempotency-Key header is required.',
+            },
+          };
+        }
+
+        const input = {
           authUid: auth.sub,
           userEmail: auth.email,
           userName: auth.displayName,
@@ -4201,10 +4219,32 @@ export function createApp(deps: CreateAppDeps = {}) {
           body: messageBody,
           appVersion: body.appVersion.trim() || 'unknown',
           platform: body.platform,
-        });
+        };
 
-        set.status = 201;
-        return { id: message.id };
+        try {
+          if (!supportMessageRepository.submit) {
+            throw new Error('support_submission_policy_not_configured');
+          }
+          const submission = await supportMessageRepository.submit({ ...input, idempotencyKey });
+          if (submission.kind === 'limited') {
+            recordSupportSubmission('limited');
+            set.status = 429;
+            set.headers['retry-after'] = String(submission.retryAfterSeconds);
+            return {
+              error: {
+                code: 'support_rate_limited',
+                message: 'Support message rate limit reached. Try again later.',
+              },
+            };
+          }
+
+          recordSupportSubmission(submission.kind === 'replayed' ? 'replayed' : 'accepted');
+          set.status = submission.kind === 'created' ? 201 : 200;
+          return { id: submission.message.id };
+        } catch (error) {
+          recordSupportSubmission('failed');
+          throw error;
+        }
       },
       {
         body: t.Object({
