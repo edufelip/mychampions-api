@@ -1,0 +1,1 @@
+ALTER TABLE "support_messages" ADD COLUMN "idempotency_key" text;

@@ -132,7 +132,8 @@ describe('web auth sessions and CORS', () => {
         headers: {
           origin: ALLOWED_ORIGIN,
           'access-control-request-method': 'POST',
-          'access-control-request-headers': 'content-type,authorization,x-request-id',
+          'access-control-request-headers':
+            'content-type,authorization,idempotency-key,x-request-id',
         },
       })
     );
@@ -143,6 +144,12 @@ describe('web auth sessions and CORS', () => {
     expect(response.headers.get('access-control-allow-methods')).toContain('POST');
     expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
       'x-request-id'
+    );
+    expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
+      'idempotency-key'
+    );
+    expect(response.headers.get('access-control-expose-headers')?.toLowerCase()).toContain(
+      'retry-after'
     );
   });
 

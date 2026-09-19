@@ -78,20 +78,31 @@ export const authSessions = pgTable(
 export type AuthSessionRow = typeof authSessions.$inferSelect;
 export type NewAuthSessionRow = typeof authSessions.$inferInsert;
 
-export const supportMessages = pgTable('support_messages', {
-  id: text('id').primaryKey(),
-  authUid: text('auth_uid').notNull(),
-  userEmail: text('user_email').notNull(),
-  userName: text('user_name').notNull(),
-  userRole: text('user_role').notNull(),
-  subject: text('subject').notNull(),
-  body: text('body').notNull(),
-  status: text('status', { enum: ['pending', 'reviewed', 'resolved'] }).notNull().default('pending'),
-  appVersion: text('app_version').notNull(),
-  platform: text('platform', { enum: ['ios', 'android', 'web'] }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const supportMessages = pgTable(
+  'support_messages',
+  {
+    id: text('id').primaryKey(),
+    authUid: text('auth_uid').notNull(),
+    userEmail: text('user_email').notNull(),
+    userName: text('user_name').notNull(),
+    userRole: text('user_role').notNull(),
+    subject: text('subject').notNull(),
+    body: text('body').notNull(),
+    status: text('status', { enum: ['pending', 'reviewed', 'resolved'] }).notNull().default('pending'),
+    appVersion: text('app_version').notNull(),
+    platform: text('platform', { enum: ['ios', 'android', 'web'] }).notNull(),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('support_messages_auth_uid_created_at_idx').on(table.authUid, table.createdAt),
+    uniqueIndex('support_messages_auth_uid_idempotency_key_idx').on(
+      table.authUid,
+      table.idempotencyKey,
+    ),
+  ],
+);
 
 export type SupportMessageRow = typeof supportMessages.$inferSelect;
 export type NewSupportMessageRow = typeof supportMessages.$inferInsert;
