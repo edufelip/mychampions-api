@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 
 import { createDatabase } from '../src/db/client';
 import { PostgresSupportMessageRepository } from '../src/support/postgres-repository';
@@ -40,6 +40,51 @@ afterAll(async () => {
 });
 
 describe('PostgresSupportMessageRepository', () => {
+  it('allows new submissions after expiry while replay remains exempt from a full quota', async () => {
+    for (let index = 0; index < 3; index += 1)
+      await repository.submit(supportInput(`expiry-${index}`));
+    expect((await repository.submit(supportInput('expiry-0'))).kind).toBe('replayed');
+    await database.client`update support_messages set created_at = clock_timestamp() - interval '16 minutes'`;
+    expect((await repository.submit(supportInput('after-expiry'))).kind).toBe('created');
+    expect(await supportMessageCount()).toBe(4);
+  });
+
+  it('uses the database clock even if an application worker clock is ahead', async () => {
+    for (let index = 0; index < 3; index += 1)
+      await repository.submit(supportInput(`clock-${index}`));
+    try {
+      setSystemTime(new Date(Date.now() + 60 * 60 * 1000));
+      const result = await repository.submit(supportInput('clock-skew-overflow'));
+      expect(result.kind).toBe('limited');
+      expect(await supportMessageCount()).toBe(3);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('waits until both active quota windows have capacity', async () => {
+    for (let index = 0; index < 7; index += 1)
+      await repository.create(supportInput(`older-${index}`));
+    await database.client`update support_messages set created_at = now() - interval '1 hour'`;
+    for (let index = 0; index < 3; index += 1)
+      await repository.submit(supportInput(`recent-${index}`));
+    const result = await repository.submit(supportInput('both-windows-full'));
+    expect(result.kind).toBe('limited');
+    if (result.kind === 'limited') expect(result.retryAfterSeconds).toBeGreaterThan(22 * 60 * 60);
+    expect(await supportMessageCount()).toBe(10);
+  });
+
+  it('waits for enough historical rows to expire when legacy traffic exceeds a quota', async () => {
+    for (let index = 0; index < 4; index += 1)
+      await repository.create(supportInput(`legacy-${index}`));
+    await database.client`update support_messages set created_at = now() - interval '1 minute'`;
+    await database.client`update support_messages set created_at = now() - interval '14 minutes' where id = (select id from support_messages limit 1)`;
+    const result = await repository.submit(supportInput('over-limit-history'));
+    expect(result.kind).toBe('limited');
+    if (result.kind === 'limited') expect(result.retryAfterSeconds).toBeGreaterThan(13 * 60);
+    expect(await supportMessageCount()).toBe(4);
+  });
+
   it('creates pending support messages with authenticated metadata', async () => {
     const message = await repository.create({
       authUid: 'uid-1',

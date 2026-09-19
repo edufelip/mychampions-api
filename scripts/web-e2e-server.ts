@@ -58,22 +58,31 @@ const supportMessageRepository: SupportMessageRepository = {
     const now = Date.now();
     const messages = supportMessagesByAuthUid.get(input.authUid) ?? [];
     const inLastDay = messages.filter(
-      (message) => Date.parse(message.createdAt) >= now - TWENTY_FOUR_HOURS_MS,
+      (message) => Date.parse(message.createdAt) > now - TWENTY_FOUR_HOURS_MS,
     );
     const inLastFifteenMinutes = inLastDay.filter(
-      (message) => Date.parse(message.createdAt) >= now - FIFTEEN_MINUTES_MS,
+      (message) => Date.parse(message.createdAt) > now - FIFTEEN_MINUTES_MS,
     );
-    const limitingMessages =
-      inLastFifteenMinutes.length >= 3
-        ? { duration: FIFTEEN_MINUTES_MS, messages: inLastFifteenMinutes }
-        : inLastDay.length >= 10
-          ? { duration: TWENTY_FOUR_HOURS_MS, messages: inLastDay }
-          : null;
-    if (limitingMessages) {
-      const oldest = Math.min(...limitingMessages.messages.map((message) => Date.parse(message.createdAt)));
+    const unlockAt = Math.max(
+      ...[
+        {
+          duration: FIFTEEN_MINUTES_MS,
+          limit: 3,
+          messages: inLastFifteenMinutes,
+        },
+        { duration: TWENTY_FOUR_HOURS_MS, limit: 10, messages: inLastDay },
+      ].map(({ duration, limit, messages }) =>
+        messages.length < limit
+          ? 0
+          : messages.map((message) => Date.parse(message.createdAt)).sort((a, b) => a - b)[
+              messages.length - limit
+            ] + duration,
+      ),
+    );
+    if (unlockAt > now) {
       return {
         kind: 'limited' as const,
-        retryAfterSeconds: Math.max(1, Math.ceil((oldest + limitingMessages.duration - now) / 1_000)),
+        retryAfterSeconds: Math.max(1, Math.ceil((unlockAt - now) / 1_000)),
       };
     }
 

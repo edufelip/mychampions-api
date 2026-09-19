@@ -92,12 +92,73 @@ async function issueSession(app: ReturnType<typeof createApp>) {
         email: 'Support@Example.test',
         displayName: 'Support User',
       }),
-    })
+    }),
   );
-  return sessionResponse.json() as Promise<{ accessToken: string; profile: { authUid: string } }>;
+  return sessionResponse.json() as Promise<{
+    accessToken: string;
+    profile: { authUid: string };
+  }>;
 }
 
 describe('support messages API', () => {
+  it('rejects malformed supplied keys instead of treating them as legacy clients', async () => {
+    const support = makeSupportRepository();
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      supportMessageRepository: support.repository,
+    });
+    const session = await issueSession(app);
+    for (const key of ['', 'short', 'invalid/key-with-slash']) {
+      const response = await app.handle(
+        new Request('http://server.test/support/messages', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${session.accessToken}`,
+            'content-type': 'application/json',
+            'idempotency-key': key,
+          },
+          body: JSON.stringify({
+            subject: 'Test',
+            body: 'Invalid key',
+            appVersion: '1.0.0',
+            platform: 'ios',
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(support.saved).toHaveLength(0);
+  });
+
+  it('keeps legacy headerless clients quota-controlled during rollout', async () => {
+    const support = makeSupportRepository();
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      supportMessageRepository: support.repository,
+    });
+    const session = await issueSession(app);
+    const request = () =>
+      new Request('http://server.test/support/messages', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          subject: 'Legacy client',
+          body: 'Support must stay available.',
+          appVersion: '1.0.0',
+          platform: 'ios',
+        }),
+      });
+    expect((await app.handle(request())).status).toBe(201);
+    support.limitNextSubmission(900);
+    const limited = await app.handle(request());
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBe('900');
+    expect(support.saved).toHaveLength(1);
+  });
+
   it('stores a trimmed authenticated support message with pending status metadata', async () => {
     const support = makeSupportRepository();
     const app = createApp({
@@ -121,7 +182,7 @@ describe('support messages API', () => {
           appVersion: '1.0.0',
           platform: 'ios',
         }),
-      })
+      }),
     );
 
     expect(response.status).toBe(201);
@@ -225,7 +286,7 @@ describe('support messages API', () => {
           appVersion: '1.0.0',
           platform: 'web',
         }),
-      })
+      }),
     );
 
     expect(response.status).toBe(401);

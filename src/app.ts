@@ -1,7 +1,7 @@
 import { bearer } from '@elysiajs/bearer';
 import { cors } from '@elysiajs/cors';
 import { jwt } from '@elysiajs/jwt';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Elysia, t } from 'elysia';
 import { rateLimit } from 'elysia-rate-limit';
 
@@ -4199,8 +4199,12 @@ export function createApp(deps: CreateAppDeps = {}) {
           };
         }
 
-        const idempotencyKey = headers['idempotency-key']?.trim();
-        if (!idempotencyKey || !SUPPORT_IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+        const suppliedIdempotencyKey = headers['idempotency-key'];
+        const idempotencyKey =
+          suppliedIdempotencyKey === undefined
+            ? `legacy-${randomUUID()}`
+            : suppliedIdempotencyKey.trim();
+        if (!SUPPORT_IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
           set.status = 400;
           return {
             error: {
