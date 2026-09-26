@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createApp } from '../src/app';
+import { MealPhotoAnalyzerError } from '../src/nutrition/meal-photo-analyzer';
 import type { ProfileRepository } from '../src/profile/repository';
 
 function makeProfileRepository(): ProfileRepository {
@@ -158,6 +159,84 @@ describe('meal photo analysis API', () => {
     );
 
     expect(response.status).toBe(401);
+  });
+
+  it('preserves the current typed analyzer error envelopes for 422, 429, and 503', async () => {
+    const cases = [
+      {
+        code: 'unrecognizable_image' as const,
+        status: 422,
+        message: 'Image does not contain a recognizable meal.',
+      },
+      {
+        code: 'quota_exceeded' as const,
+        status: 429,
+        message: 'Meal analysis quota exceeded. Try again later.',
+      },
+      {
+        code: 'configuration' as const,
+        status: 503,
+        message: 'Meal photo analyzer is not configured for this local server.',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const app = createApp({
+        profileRepository: makeProfileRepository(),
+        mealPhotoAnalyzer: {
+          async analyze() {
+            throw new MealPhotoAnalyzerError(testCase.code, testCase.message);
+          },
+        },
+      } as any);
+      const session = await issueSession(app);
+
+      const response = await app.handle(
+        new Request('http://server.test/nutrition/meal-photo-analysis', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${session.accessToken}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ image: 'base64-jpeg==', mimeType: 'image/jpeg' }),
+        }),
+      );
+
+      expect(response.status).toBe(testCase.status);
+      await expect(response.json()).resolves.toEqual({
+        error: testCase.code,
+        message: testCase.message,
+      });
+    }
+  });
+
+  it('returns the current invalid-response envelope when the analyzer result is malformed', async () => {
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      mealPhotoAnalyzer: {
+        async analyze() {
+          return { calories: 1 } as any;
+        },
+      },
+    } as any);
+    const session = await issueSession(app);
+
+    const response = await app.handle(
+      new Request('http://server.test/nutrition/meal-photo-analysis', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ image: 'base64-jpeg==', mimeType: 'image/jpeg' }),
+      }),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: 'invalid_response',
+      message: 'Meal photo analyzer returned an invalid macro estimate.',
+    });
   });
 
   it('rejects oversized meal photo payloads before analyzer execution', async () => {
