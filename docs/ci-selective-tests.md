@@ -64,8 +64,12 @@ Postgres to run against.
 It does **not** attempt to reproduce `mychampions_food_catalog_local` /
 `mychampions_exercise_catalog_local` content — those only get real rows from
 a production mirror (`bun run local:db:mirror`), and pulling production data
-into a hosted CI runner isn't something this workflow does. The three tests
-that assert against real catalog rows (`tests/postgres-exercise-search-gateway.test.ts`,
+into a hosted CI runner isn't something this workflow does. The legacy tests
+that assert against mirrored catalog rows
+(`tests/postgres-exercise-search-gateway.test.ts` and
 `tests/postgres-food-search-gateway.test.ts`) detect `CI=true` (set
-automatically by GitHub Actions) and skip themselves there, with a comment
-explaining why. They still run normally in local dev against a mirrored DB.
+automatically by GitHub Actions) and skip those mirror-dependent cases. The
+ET-229 V2 gateway case uses the separately provisioned
+`mychampions_exercise_v2_test_local` database, seeds four synthetic rows, and
+tears them down in the test so deterministic retrieval remains covered in
+hosted CI without importing production data.

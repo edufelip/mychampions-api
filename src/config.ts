@@ -23,6 +23,12 @@ export type ServerConfig = {
   revenueCatWebhookSigningSecret: string | null;
   authRateLimitWindowMs: number;
   authRateLimitMax: number;
+  exerciseSearchV2Enabled: boolean;
+  exerciseSuggestionsEnabled: boolean;
+  typesafeApiKey: string | null;
+  typesafeModel: string;
+  exerciseSuggestionTimeoutMs: number;
+  exerciseSuggestionConfidence: number;
 };
 
 function isExplicitLocalDevVariant(appVariant: string | undefined): boolean {
@@ -75,6 +81,16 @@ function isPrivateRsaJwk(value: unknown): value is JWK {
 
 export function readConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
   const production = env.NODE_ENV === 'production';
+  const exerciseSearchV2Enabled = readStrictBooleanEnv(
+    env.EXERCISE_SEARCH_V2_ENABLED,
+    false,
+    'EXERCISE_SEARCH_V2_ENABLED',
+  );
+  const exerciseSuggestionsEnabled = readStrictBooleanEnv(
+    env.EXERCISE_SUGGESTIONS_ENABLED,
+    false,
+    'EXERCISE_SUGGESTIONS_ENABLED',
+  );
   return {
     port: Number.parseInt(env.PORT ?? '3400', 10),
     databaseUrl:
@@ -114,10 +130,66 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     revenueCatWebhookSigningSecret: env.REVENUECAT_WEBHOOK_SIGNING_SECRET?.trim() || null,
     authRateLimitWindowMs: readPositiveIntEnv(env.AUTH_RATE_LIMIT_WINDOW_MS, 60_000),
     authRateLimitMax: readPositiveIntEnv(env.AUTH_RATE_LIMIT_MAX, 20),
+    exerciseSearchV2Enabled,
+    exerciseSuggestionsEnabled,
+    typesafeApiKey: env.TYPESAFE_API_KEY?.trim() || null,
+    typesafeModel: env.TYPESAFE_MODEL?.trim() || 'jev-1.13.0',
+    exerciseSuggestionTimeoutMs: readBoundedIntEnv(
+      env.EXERCISE_SUGGESTION_TIMEOUT_MS,
+      900,
+      100,
+      2_000,
+      'EXERCISE_SUGGESTION_TIMEOUT_MS',
+    ),
+    exerciseSuggestionConfidence: readBoundedNumberEnv(
+      env.EXERCISE_SUGGESTION_CONFIDENCE,
+      0.9,
+      0,
+      1,
+      'EXERCISE_SUGGESTION_CONFIDENCE',
+    ),
   };
 }
 
 function readPositiveIntEnv(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readStrictBooleanEnv(value: string | undefined, fallback: boolean, name: string): boolean {
+  if (value === undefined || value.trim() === '') return fallback;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${name} must be exactly true or false.`);
+}
+
+function readBoundedIntEnv(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  name: string,
+): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  if (!/^\d+$/u.test(value.trim())) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  const parsed = Number.parseInt(value, 10);
+  if (parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
+}
+
+function readBoundedNumberEnv(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  name: string,
+): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be a number between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
 }

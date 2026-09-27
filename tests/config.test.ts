@@ -54,4 +54,32 @@ describe('server configuration', () => {
       readConfig({ AUTH_JWT_PRIVATE_JWK: JSON.stringify(privateJwk) }).authJwtPrivateJwk
     ).toMatchObject({ kty: 'RSA', d: expect.any(String) });
   });
+
+  it('keeps exercise retrieval and provider suggestions disabled by default', () => {
+    const config = readConfig({});
+    expect(config.exerciseSearchV2Enabled).toBe(false);
+    expect(config.exerciseSuggestionsEnabled).toBe(false);
+    expect(config.typesafeApiKey).toBeNull();
+    expect(config.exerciseSuggestionTimeoutMs).toBe(900);
+    expect(config.exerciseSuggestionConfidence).toBe(0.9);
+  });
+
+  it('accepts only exact feature flag values and bounded suggestion settings', () => {
+    const config = readConfig({
+      EXERCISE_SEARCH_V2_ENABLED: 'true',
+      EXERCISE_SUGGESTIONS_ENABLED: 'true',
+      TYPESAFE_API_KEY: ' key ',
+      EXERCISE_SUGGESTION_TIMEOUT_MS: '1000',
+      EXERCISE_SUGGESTION_CONFIDENCE: '0.95',
+    });
+    expect(config.exerciseSearchV2Enabled).toBe(true);
+    expect(config.exerciseSuggestionsEnabled).toBe(true);
+    expect(config.typesafeApiKey).toBe('key');
+    expect(config.exerciseSuggestionTimeoutMs).toBe(1000);
+    expect(config.exerciseSuggestionConfidence).toBe(0.95);
+    expect(() => readConfig({ EXERCISE_SUGGESTIONS_ENABLED: 'yes' })).toThrow(
+      'EXERCISE_SUGGESTIONS_ENABLED must be exactly true or false.',
+    );
+    expect(() => readConfig({ EXERCISE_SUGGESTION_TIMEOUT_MS: '99' })).toThrow();
+  });
 });

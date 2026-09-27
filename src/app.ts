@@ -119,6 +119,11 @@ import {
   type ExerciseSearchGateway,
 } from './integrations/exercise-search-gateway';
 import {
+  createExerciseSuggestionService,
+  type ExerciseSuggestionService,
+} from './integrations/exercise-suggestion-service';
+import { createTypeSafeExerciseClient, type TypeSafeExerciseClient } from './integrations/typesafe-exercise-client';
+import {
   PlanChangeRequestForbiddenError,
   PlanChangeRequestNotFoundError,
   type PlanChangeRequest,
@@ -149,6 +154,8 @@ type CreateAppDeps = {
   specialtyRepository?: ProfessionalSpecialtyRepository;
   foodSearchGateway?: FoodSearchGateway;
   exerciseSearchGateway?: ExerciseSearchGateway;
+  exerciseSuggestionService?: ExerciseSuggestionService;
+  typeSafeExerciseClient?: TypeSafeExerciseClient;
   planChangeRequestRepository?: PlanChangeRequestRepository;
   planRepository?: PlanRepository;
   tokenService?: TokenService;
@@ -1137,7 +1144,21 @@ export function createApp(deps: CreateAppDeps = {}) {
   const foodSearchGateway =
     deps.foodSearchGateway ?? new PostgresFoodSearchGateway(config.foodCatalogDatabaseUrl);
   const exerciseSearchGateway =
-    deps.exerciseSearchGateway ?? new PostgresExerciseSearchGateway(config.exerciseCatalogDatabaseUrl);
+    deps.exerciseSearchGateway ??
+    new PostgresExerciseSearchGateway(config.exerciseCatalogDatabaseUrl, {
+      v2Enabled: config.exerciseSearchV2Enabled,
+    });
+  const exerciseSuggestionService =
+    deps.exerciseSuggestionService ??
+    createExerciseSuggestionService({
+      gateway: exerciseSearchGateway,
+      config,
+      client:
+        deps.typeSafeExerciseClient ??
+        createTypeSafeExerciseClient({
+          apiKey: config.typesafeApiKey,
+        }),
+    });
   const planChangeRequestRepository =
     deps.planChangeRequestRepository ??
     (database
@@ -3585,6 +3606,65 @@ export function createApp(deps: CreateAppDeps = {}) {
           pageSize: t.Optional(t.Number({ minimum: 1, maximum: 50 })),
           lang: t.String({ minLength: 2 }),
         }),
+      }
+    )
+    .post(
+      '/integrations/exercise/suggest',
+      async ({ auth, body, request, set }) => {
+        if (!auth?.sub) {
+          set.status = 401;
+          return { error: { code: 'unauthorized', message: 'Missing or invalid bearer token.' } };
+        }
+
+        const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+        const query = typeof input.query === 'string' ? input.query.trim() : '';
+        const lang = typeof input.lang === 'string' ? input.lang.trim() : '';
+        const pageSize = input.pageSize === undefined ? 20 : input.pageSize;
+        if (!query || [...query].length > 200 || !lang || lang.length < 2) {
+          set.status = 400;
+          return { error: { code: 'invalid_request', message: 'A bounded query and language are required.' } };
+        }
+        if (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
+          set.status = 400;
+          return { error: { code: 'invalid_page_size', message: 'pageSize must be an integer from 1 to 50.' } };
+        }
+        if (input.consent !== true) {
+          set.status = 400;
+          return { error: { code: 'consent_required', message: 'Explicit consent is required for suggestions.' } };
+        }
+
+        try {
+          const result = await exerciseSuggestionService.suggest({
+            authUid: auth.sub,
+            query,
+            pageSize,
+            lang,
+            requestId: request.headers.get('x-request-id') ?? undefined,
+            signal: request.signal,
+          });
+          if (result.rateLimited) {
+            set.status = 429;
+            set.headers = { 'Retry-After': '60' };
+          }
+          return {
+            schemaVersion: result.schemaVersion,
+            query: result.query,
+            lang: result.lang,
+            page: result.page,
+            pageSize: result.pageSize,
+            total: result.total,
+            results: result.results,
+            suggestion: result.suggestion,
+            status: result.status,
+          };
+        } catch (error) {
+          return exerciseSearchGatewayErrorResponse(error, set);
+        }
+      },
+      {
+        // This route performs its own validation so malformed/false consent
+        // uses the documented 400 response instead of Elysia's 422 default.
+        body: t.Any(),
       }
     )
     .get(

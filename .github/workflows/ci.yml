@@ -88,6 +88,7 @@ jobs:
       DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_server_local
       FOOD_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_food_catalog_local
       EXERCISE_CATALOG_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_exercise_catalog_local
+      EXERCISE_CATALOG_V2_TEST_DATABASE_URL: postgres://mychampions_local:mychampions_local_password@localhost:5432/mychampions_exercise_v2_test_local
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,6 +111,7 @@ jobs:
           psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_server_local OWNER mychampions_local;"
           psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_food_catalog_local OWNER mychampions_local;"
           psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_exercise_catalog_local OWNER mychampions_local;"
+          psql -h localhost -U mychampions_local -d mychampions_local -c "CREATE DATABASE mychampions_exercise_v2_test_local OWNER mychampions_local;"
 
       - name: Apply schema migrations
         run: bun run db:migrate
