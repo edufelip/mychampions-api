@@ -1,3 +1,4 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -5,9 +6,7 @@ import {
   PostgresExerciseSearchGateway,
 } from '../src/integrations/exercise-search-gateway';
 
-const databaseUrl =
-  process.env.EXERCISE_CATALOG_DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_exercise_catalog_local';
+const databaseUrl = await requireOwnedTestDatabase('EXERCISE_CATALOG_DATABASE_URL');
 
 describe('PostgresExerciseSearchGateway', () => {
   it('normalizes localized catalog rows and loads the same exercise by id', async () => {

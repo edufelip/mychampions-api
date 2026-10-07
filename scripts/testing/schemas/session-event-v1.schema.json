@@ -1,0 +1,212 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/session-event-v1.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "event": {
+          "const": "acquired"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{24}$"
+        },
+        "manifestPath": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+        }
+      },
+      "required": ["schemaVersion", "event", "runId", "manifestPath"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "event": {
+          "const": "ready"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{24}$"
+        },
+        "manifestPath": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+        },
+        "apiOrigin": {
+          "type": "string",
+          "pattern": "^http://127\\.0\\.0\\.1:[0-9]{4,5}$"
+        },
+        "apiPid": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "fixtureSummary": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "foodCount": {
+              "const": 3
+            },
+            "exerciseCount": {
+              "const": 3
+            },
+            "contentHash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": ["foodCount", "exerciseCount", "contentHash"]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "event",
+        "runId",
+        "manifestPath",
+        "apiOrigin",
+        "apiPid",
+        "fixtureSummary"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "event": {
+          "const": "seeded"
+        },
+        "fixtureRef": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+        }
+      },
+      "required": ["schemaVersion", "id", "event", "fixtureRef"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "event": {
+          "const": "restarted"
+        },
+        "apiOrigin": {
+          "type": "string",
+          "pattern": "^http://127\\.0\\.0\\.1:[0-9]{4,5}$"
+        },
+        "apiPid": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "previousPid": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "event",
+        "apiOrigin",
+        "apiPid",
+        "previousPid"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "event": {
+          "const": "closed"
+        },
+        "receiptPath": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+        },
+        "cleanup": {
+          "enum": ["cleaned", "failed-recovery-ledger-retained"]
+        },
+        "exitCode": {
+          "enum": [0, 2, 130, 143]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "event",
+        "receiptPath",
+        "cleanup",
+        "exitCode"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "event": {
+          "const": "snapshotted"
+        },
+        "snapshotRef": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+        }
+      },
+      "required": ["schemaVersion", "id", "event", "snapshotRef"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "event": {
+          "const": "connection-snapshotted"
+        },
+        "snapshotRef": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+        }
+      },
+      "required": ["schemaVersion", "id", "event", "snapshotRef"]
+    }
+  ]
+}

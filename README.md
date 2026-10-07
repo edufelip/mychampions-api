@@ -26,7 +26,8 @@ From the parent workspace:
 ```bash
 bun run local:db:up
 bun run server:db:migrate
-bun run server:test
+./scripts/server-bun.sh run test:unit
+./scripts/server-bun.sh run test:integration
 bun run server:dev
 ```
 
@@ -210,6 +211,7 @@ The current local migration slice covers mobile server boundaries now owned by t
 - `POST /auth/email/create-account`
 - `POST /auth/social/sign-in`
 - `POST /auth/password-reset`
+- `POST /auth/password-reset/confirm`
 - `GET /me`
 - `POST /subscription/entitlements/snapshot`
 - `POST /webhooks/revenuecat`
@@ -271,6 +273,7 @@ The current local migration slice covers mobile server boundaries now owned by t
 - `PATCH /plans/change-requests/:requestId/review`
 
 `DELETE /me` is the local account-deletion boundary used by mobile account settings. It removes direct account-owned local rows such as profile, support, password-reset artifacts, subscription snapshots, specialties, credentials, invite state, plans, logs, custom meals, and share artifacts. Relationship/history rows that may be needed by the other participant are ended and rewritten to a non-reversible `deleted_account_*` pseudonym so the deleted auth UID is not retained in local server tables.
+
 - `POST /nutrition/meal-photo-analysis`
 - `POST /nutrition/custom-meal-images/:mealId`
 - `POST /nutrition/custom-meals`
@@ -313,6 +316,8 @@ other direct data.
 `POST /auth/social/sign-in` is the server-owned Google/Apple auth exchange boundary. Mobile continues native Google/Apple token capture and posts the captured token here before using deterministic local social sessions only for explicit provider-token configuration gaps in local development. The route accepts `provider`, provider `idToken`, and optional `accessToken`/`nonce`, verifies the token directly against the provider's JWKS, and requires the configured audience, issuer, subject, signature, and expiry. Google requires a verified email on every sign-in. Apple requires a verified email for first identity creation, while a returning signed Apple token without email is resolved only through its stored provider subject. Google audiences come from `GOOGLE_ANDROID_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`, and `GOOGLE_WEB_CLIENT_ID`; Apple audiences come from `APPLE_CLIENT_ID` and `APPLE_WEB_CLIENT_ID`. The route returns `configuration` with HTTP 503 until the requested provider audience is configured.
 
 `POST /auth/password-reset` accepts a normalized email address and records a provider-neutral local password-reset request in local Postgres table `password_reset_requests` through the server-owned password-reset service. The canonical request row stores only the SHA-256 token digest plus `expires_at`, and the HTTP response stays `{ "status": "accepted" }` without exposing provider, token, or delivery details. For local development, the server also writes a `password_reset_delivery_artifacts` debug-outbox row with the raw reset token and `mychampions://auth/password-reset?...` reset URL so the local flow can be inspected without remote email delivery. Direct transactional delivery stays disabled until its own transport credentials are configured.
+
+`POST /auth/password-reset/confirm` accepts `{ email, token, newPassword }` and completes a password reset. The server-owned password-reset service atomically verifies the submitted token's SHA-256 digest against the stored `password_reset_requests` row for that email, requires the row still be `pending` and unexpired, and marks it `consumed` in the same conditional update so a token can be redeemed at most once; an invalid, expired, or already-consumed token returns `400 invalid_or_expired_token` without touching any account. Before entering that transaction, the service hashes the new password with Argon2id; inside the same transaction it updates the matching `local_email_auth_credentials` row and revokes every existing `auth_sessions` row for that account so a stolen session cannot outlive the reset. A successful reset returns `{ "status": "reset" }`.
 
 `POST /support/messages` stores write-only support requests in local Postgres table `support_messages`. The mobile client sends subject/body plus app metadata; the server derives authenticated user metadata from the bearer token and stores new messages with `status='pending'`.
 
@@ -374,3 +379,20 @@ independent privileges in the same iteration.
 `POST /nutrition/portion-logs` stores the authenticated student's consumed portion log in local Postgres table `portion_logs`, including the nutrition snapshot and optional assigned-plan provenance. `GET /nutrition/portion-logs?from=<iso>` returns the authenticated student's portion logs since the requested timestamp. The mobile `custom-meal-source` uses these endpoints for assigned meal portion logs, custom-meal quick logs, and today's portion-log reads when a local server bearer token is available.
 
 The mobile app posts email/password sign-in and create-account attempts to the MyChampions server email auth boundary. Those attempts use local Postgres credentials by default; Google and Apple identity tokens are verified directly when their server audiences are configured. The deterministic local dev-session bridge remains available only when `LOCAL_DEV_AUTH_ENABLED=false` is not configured, `NODE_ENV=production` is not set, and `APP_VARIANT` is unset, blank, or `dev`.
+
+## Test isolation
+
+Use pinned Bun 1.3.10 and the separate `test:unit` / `test:integration` commands described in [docs/testing.md](docs/testing.md). Integration owns disposable loopback Postgres and forbids the shared developer database, even under direct `bun test` invocation. The legacy broad `test`/parent `server:test` command reports DB entrypoint errors unless an owned runtime is supplied. This is intentional; it cannot silently truncate developer tables.
+
+Browser/native runner preparation reuses `scripts/testing/owned-runtime.ts`
+through the private stdio `scripts/testing/session.ts` bridge. It supplies
+attempt-scoped fixture references and API restart/cleanup without HTTP reset
+routes. See [the shared session contract](docs/testing.md#shared-acquisition-and-private-runner-sessions-p3t10).
+`verify-runtime-handoff.ts` provides explicit local Docker verification; it does
+not execute browser or native journeys.
+
+Owned test manifests, fixture references and private session messages now use
+strict checked-in schemas with AJV 8.18.0. The client's validated Node bridge
+checks private files and PID/start identity before using the session. The
+[testing contract](docs/testing.md#schema-validation-and-client-handoff) separates
+backend handoff verification from pending integrated browser attempt evidence.

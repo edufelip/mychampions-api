@@ -1,0 +1,1 @@
+ALTER TABLE "password_reset_requests" ADD COLUMN "consumed_at" timestamp with time zone;

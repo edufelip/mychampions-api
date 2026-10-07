@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 
-import { InMemoryPasswordResetService } from '../src/auth/password-reset';
+import {
+  InMemoryPasswordResetService,
+  PasswordResetConfirmError,
+} from '../src/auth/password-reset';
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -31,6 +34,8 @@ describe('InMemoryPasswordResetService', () => {
         tokenDigest: sha256Hex('raw-reset-token'),
         requestedAt: '2026-07-03T12:00:00.000Z',
         expiresAt: '2026-07-03T12:15:00.000Z',
+        status: 'pending',
+        consumedAt: null,
       },
     ]);
     expect(JSON.stringify(service.listRequests())).not.toContain('raw-reset-token');
@@ -99,5 +104,68 @@ describe('InMemoryPasswordResetService', () => {
         expiresAt: '2026-07-03T12:15:00.000Z',
       },
     ]);
+  });
+
+  it('confirms a pending token and marks it consumed exactly once', async () => {
+    const now = new Date('2026-07-03T12:00:00.000Z');
+    const service = new InMemoryPasswordResetService({
+      now: () => now,
+      requestIdFactory: () => 'local_password_reset_test',
+      tokenFactory: () => 'raw-reset-token',
+      ttlMs: 15 * 60 * 1000,
+    });
+    await service.request({ emailNormalized: 'user@example.test' });
+
+    const result = await service.confirm({
+      emailNormalized: 'user@example.test',
+      token: 'raw-reset-token',
+    });
+
+    expect(result).toEqual({ requestId: 'local_password_reset_test' });
+    expect(service.listRequests()).toEqual([
+      {
+        requestId: 'local_password_reset_test',
+        emailNormalized: 'user@example.test',
+        tokenDigest: sha256Hex('raw-reset-token'),
+        requestedAt: '2026-07-03T12:00:00.000Z',
+        expiresAt: '2026-07-03T12:15:00.000Z',
+        status: 'consumed',
+        consumedAt: '2026-07-03T12:00:00.000Z',
+      },
+    ]);
+
+    await expect(
+      service.confirm({ emailNormalized: 'user@example.test', token: 'raw-reset-token' })
+    ).rejects.toThrow(PasswordResetConfirmError);
+  });
+
+  it('rejects an expired token', async () => {
+    let now = new Date('2026-07-03T12:00:00.000Z');
+    const service = new InMemoryPasswordResetService({
+      now: () => now,
+      requestIdFactory: () => 'local_password_reset_test',
+      tokenFactory: () => 'raw-reset-token',
+      ttlMs: 15 * 60 * 1000,
+    });
+    await service.request({ emailNormalized: 'user@example.test' });
+
+    now = new Date('2026-07-03T12:16:00.000Z');
+
+    await expect(
+      service.confirm({ emailNormalized: 'user@example.test', token: 'raw-reset-token' })
+    ).rejects.toThrow(PasswordResetConfirmError);
+  });
+
+  it('rejects a token that does not match the requested email', async () => {
+    const service = new InMemoryPasswordResetService({
+      requestIdFactory: () => 'local_password_reset_test',
+      tokenFactory: () => 'raw-reset-token',
+      ttlMs: 15 * 60 * 1000,
+    });
+    await service.request({ emailNormalized: 'user@example.test' });
+
+    await expect(
+      service.confirm({ emailNormalized: 'other@example.test', token: 'raw-reset-token' })
+    ).rejects.toThrow(PasswordResetConfirmError);
   });
 });

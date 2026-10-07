@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/resource-manifest-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{24}$"
+    },
+    "composeProject": {
+      "type": "string",
+      "pattern": "^mc_test_[a-f0-9]{24}$"
+    },
+    "containerId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ownerTokenHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "port": {
+      "type": "integer",
+      "anyOf": [
+        {
+          "const": 0
+        },
+        {
+          "minimum": 1024,
+          "maximum": 65535,
+          "not": {
+            "const": 15432
+          }
+        }
+      ]
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "DATABASE_URL": {
+          "type": "string",
+          "pattern": "^mc_test_[a-f0-9]{24}$"
+        },
+        "FOOD_CATALOG_DATABASE_URL": {
+          "type": "string",
+          "pattern": "^mc_test_[a-f0-9]{24}_food$"
+        },
+        "EXERCISE_CATALOG_DATABASE_URL": {
+          "type": "string",
+          "pattern": "^mc_test_[a-f0-9]{24}_exercise$"
+        }
+      },
+      "required": [
+        "DATABASE_URL",
+        "FOOD_CATALOG_DATABASE_URL",
+        "EXERCISE_CATALOG_DATABASE_URL"
+      ]
+    },
+    "repoRoot": {
+      "type": "string",
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+    },
+    "runtimeRoot": {
+      "type": "string",
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+    },
+    "artifactRoot": {
+      "type": "string",
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "utc-timestamp"
+    },
+    "repositories": {
+      "type": "object",
+      "required": ["server", "client"],
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sha": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{40}$"
+          },
+          "dirty": {
+            "type": "boolean"
+          },
+          "workingTreeHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": ["sha", "dirty", "workingTreeHash"]
+      }
+    },
+    "orchestratorPid": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 2147483647
+    },
+    "testChildPid": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "phase": {
+      "enum": ["bootstrap", "tests", "cleanup"]
+    },
+    "fixtureScopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9-]{1,32}$"
+      },
+      "uniqueItems": true
+    },
+    "processes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "enum": ["orchestrator", "test", "api"]
+          },
+          "pid": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 2147483647
+          },
+          "started": {
+            "type": "string",
+            "minLength": 1
+          },
+          "script": {
+            "type": "string",
+            "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+          }
+        },
+        "required": ["role", "pid", "started", "script"]
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runId",
+    "composeProject",
+    "containerId",
+    "ownerTokenHash",
+    "port",
+    "targets",
+    "repoRoot",
+    "runtimeRoot",
+    "artifactRoot",
+    "createdAt",
+    "repositories",
+    "orchestratorPid",
+    "testChildPid",
+    "phase",
+    "fixtureScopes",
+    "processes"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "tests"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "port": {
+            "minimum": 1024
+          },
+          "containerId": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

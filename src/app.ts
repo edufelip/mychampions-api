@@ -45,6 +45,8 @@ import {
 import { PostgresRefreshSessionRepository } from './auth/postgres-refresh-session-repository';
 import {
   InMemoryPasswordResetService,
+  PasswordResetConfirmError,
+  type PasswordResetCompletionService,
   type PasswordResetService,
 } from './auth/password-reset';
 import { PostgresPasswordResetService } from './auth/postgres-password-reset';
@@ -151,6 +153,7 @@ type CreateAppDeps = {
   tokenService?: TokenService;
   refreshSessionService?: RefreshSessionServiceType;
   passwordResetService?: PasswordResetService;
+  passwordResetCompletionService?: PasswordResetCompletionService;
   passwordResetDeliveryGateway?: PasswordResetDeliveryGateway;
   emailAuthGateway?: EmailAuthGateway;
   socialAuthGateway?: SocialAuthGateway;
@@ -441,6 +444,8 @@ function emailAuthGatewayErrorResponse(error: unknown, set: { status?: number | 
     set.status = 503;
   } else if (error.code === 'invalid_credentials') {
     set.status = 401;
+  } else if (error.code === 'account_not_found') {
+    set.status = 404;
   } else {
     set.status = 409;
   }
@@ -483,6 +488,21 @@ function passwordResetDeliveryGatewayErrorResponse(
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+    },
+  };
+}
+
+function passwordResetConfirmErrorResponse(error: unknown, set: { status?: number | string }) {
+  if (!(error instanceof PasswordResetConfirmError)) {
+    throw error;
+  }
+
+  set.status = error.code === 'account_not_found' ? 404 : 400;
 
   return {
     error: {
@@ -1209,6 +1229,11 @@ export function createApp(deps: CreateAppDeps = {}) {
       : new InMemoryPasswordResetService({
           deliveryGateway: passwordResetDeliveryGateway,
         }));
+  const passwordResetCompletionService =
+    deps.passwordResetCompletionService ??
+    (passwordResetService instanceof PostgresPasswordResetService
+      ? passwordResetService
+      : undefined);
   const analyticsEventRepository =
     deps.analyticsEventRepository ??
     (database
@@ -1677,6 +1702,40 @@ export function createApp(deps: CreateAppDeps = {}) {
       {
         body: t.Object({
           email: t.String({ minLength: 1 }),
+        }),
+      }
+    )
+    .post(
+      '/auth/password-reset/confirm',
+      async ({ body, set }) => {
+        const emailNormalized = normalizeEmail(body.email);
+        if (!isEmailLike(emailNormalized)) {
+          set.status = 400;
+          return { error: { code: 'invalid_email', message: 'Email is invalid.' } };
+        }
+
+        if (!passwordResetCompletionService) {
+          throw new Error('password_reset_completion_not_configured');
+        }
+
+        try {
+          await passwordResetCompletionService.confirmAndUpdatePassword({
+            emailNormalized,
+            token: body.token,
+            newPassword: body.newPassword,
+          });
+        } catch (error) {
+          return passwordResetConfirmErrorResponse(error, set);
+        }
+
+        set.status = 200;
+        return { status: 'reset' };
+      },
+      {
+        body: t.Object({
+          email: t.String({ minLength: 1 }),
+          token: t.String({ minLength: 1 }),
+          newPassword: t.String({ minLength: 1 }),
         }),
       }
     )

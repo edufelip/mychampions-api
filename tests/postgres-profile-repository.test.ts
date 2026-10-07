@@ -1,12 +1,11 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 
 import { createDatabase } from '../src/db/client';
 import { PostgresProfileRepository } from '../src/profile/postgres-repository';
 import { ProfileConflictError } from '../src/profile/repository';
 
-const databaseUrl =
-  process.env.DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_server_local';
+const databaseUrl = await requireOwnedTestDatabase('DATABASE_URL');
 
 const database = createDatabase(databaseUrl);
 const repository = new PostgresProfileRepository(database.db);

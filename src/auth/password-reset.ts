@@ -15,6 +15,8 @@ export type PasswordResetRequest = {
   tokenDigest: string;
   requestedAt: string;
   expiresAt: string;
+  status: 'pending' | 'consumed';
+  consumedAt: string | null;
 };
 
 export type PasswordResetRequestResult = Pick<
@@ -23,6 +25,41 @@ export type PasswordResetRequestResult = Pick<
 > & {
   resetToken: string;
 };
+
+export type PasswordResetConfirmInput = {
+  emailNormalized: string;
+  token: string;
+};
+
+export type PasswordResetConfirmResult = {
+  requestId: string;
+};
+
+export type PasswordResetCompletionInput = PasswordResetConfirmInput & {
+  newPassword: string;
+};
+
+export type PasswordResetCompletionResult = PasswordResetConfirmResult & {
+  authUid: string;
+};
+
+export interface PasswordResetCompletionService {
+  confirmAndUpdatePassword(
+    input: PasswordResetCompletionInput
+  ): Promise<PasswordResetCompletionResult>;
+}
+
+export type PasswordResetConfirmErrorCode = 'invalid_or_expired_token' | 'account_not_found';
+
+export class PasswordResetConfirmError extends Error {
+  readonly code: PasswordResetConfirmErrorCode;
+
+  constructor(code: PasswordResetConfirmErrorCode, message: string) {
+    super(message);
+    this.name = 'PasswordResetConfirmError';
+    this.code = code;
+  }
+}
 
 export type PasswordResetDeliveryArtifact = {
   requestId: string;
@@ -36,6 +73,7 @@ export type PasswordResetDeliveryArtifact = {
 
 export interface PasswordResetService {
   request(input: PasswordResetRequestInput): Promise<PasswordResetRequestResult>;
+  confirm(input: PasswordResetConfirmInput): Promise<PasswordResetConfirmResult>;
 }
 
 export type PasswordResetServiceOptions = {
@@ -97,6 +135,8 @@ export class InMemoryPasswordResetService implements PasswordResetService {
       tokenDigest: digestPasswordResetToken(resetToken),
       requestedAt: requestedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
+      status: 'pending',
+      consumedAt: null,
     };
     this.requests.push(request);
     const deliveryArtifact = createPasswordResetDeliveryArtifact({
@@ -119,6 +159,30 @@ export class InMemoryPasswordResetService implements PasswordResetService {
       resetToken,
       expiresAt: request.expiresAt,
     };
+  }
+
+  async confirm(input: PasswordResetConfirmInput): Promise<PasswordResetConfirmResult> {
+    const now = this.options.now?.() ?? new Date();
+    const tokenDigest = digestPasswordResetToken(input.token);
+    const request = this.requests.find(
+      (candidate) =>
+        candidate.emailNormalized === input.emailNormalized &&
+        candidate.tokenDigest === tokenDigest &&
+        candidate.status === 'pending' &&
+        new Date(candidate.expiresAt) > now
+    );
+
+    if (!request) {
+      throw new PasswordResetConfirmError(
+        'invalid_or_expired_token',
+        'Password reset token is invalid or expired.'
+      );
+    }
+
+    request.status = 'consumed';
+    request.consumedAt = now.toISOString();
+
+    return { requestId: request.requestId };
   }
 
   listRequests(): PasswordResetRequest[] {

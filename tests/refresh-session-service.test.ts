@@ -42,4 +42,37 @@ describe('RefreshSessionService', () => {
     });
     await expect(service.rotate(issued.refreshToken)).rejects.toThrow('invalid_refresh_token');
   });
+
+  it('revokes every active session for an auth uid, leaving other users untouched', async () => {
+    const tokenService = createTokenService({ issuer: 'mychampions-test', audience: 'mychampions-mobile' });
+    const service = new RefreshSessionService(tokenService, new InMemoryRefreshSessionRepository());
+
+    const first = await service.issue({
+      sub: 'auth-user-1',
+      email: 'user@example.test',
+      displayName: 'User',
+      emailVerified: true,
+      authProviderId: 'email_password',
+    });
+    const second = await service.issue({
+      sub: 'auth-user-1',
+      email: 'user@example.test',
+      displayName: 'User',
+      emailVerified: true,
+      authProviderId: 'email_password',
+    });
+    const other = await service.issue({
+      sub: 'auth-user-2',
+      email: 'other@example.test',
+      displayName: 'Other User',
+      emailVerified: true,
+      authProviderId: 'email_password',
+    });
+
+    await service.revokeAllForAuthUid('auth-user-1');
+
+    await expect(service.rotate(first.refreshToken)).rejects.toThrow('invalid_refresh_token');
+    await expect(service.rotate(second.refreshToken)).rejects.toThrow('invalid_refresh_token');
+    await expect(service.rotate(other.refreshToken)).resolves.toBeDefined();
+  });
 });

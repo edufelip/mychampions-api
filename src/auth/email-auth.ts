@@ -22,16 +22,31 @@ export type EmailAuthIdentity = {
   emailVerified: boolean;
 };
 
+export type EmailAuthUpdatePasswordInput = {
+  email: string;
+  newPassword: string;
+};
+
+export type EmailAuthUpdatePasswordResult = {
+  authUid: string;
+};
+
 export type EmailAuthGateway = {
   signIn(input: EmailAuthInput): Promise<EmailAuthIdentity>;
   createAccount(input: EmailCreateAccountInput): Promise<EmailAuthIdentity>;
+  updatePassword(input: EmailAuthUpdatePasswordInput): Promise<EmailAuthUpdatePasswordResult>;
 };
+
+export function hashLocalEmailPassword(password: string): Promise<string> {
+  return Bun.password.hash(password, { algorithm: 'argon2id' });
+}
 
 export type EmailAuthGatewayErrorCode =
   | 'configuration'
   | 'invalid_credentials'
   | 'duplicate_email'
-  | 'provider_conflict';
+  | 'provider_conflict'
+  | 'account_not_found';
 
 export class EmailAuthGatewayError extends Error {
   readonly code: EmailAuthGatewayErrorCode;
@@ -52,6 +67,13 @@ export class UnconfiguredEmailAuthGateway implements EmailAuthGateway {
   }
 
   async createAccount(): Promise<EmailAuthIdentity> {
+    throw new EmailAuthGatewayError(
+      'configuration',
+      'Email auth provider is not configured for this local server.'
+    );
+  }
+
+  async updatePassword(): Promise<EmailAuthUpdatePasswordResult> {
     throw new EmailAuthGatewayError(
       'configuration',
       'Email auth provider is not configured for this local server.'
@@ -88,7 +110,7 @@ export class LocalEmailAuthGateway implements EmailAuthGateway {
     }
 
     const authUid = `local_email_${randomUUID()}`;
-    const passwordHash = await Bun.password.hash(input.password, { algorithm: 'argon2id' });
+    const passwordHash = await hashLocalEmailPassword(input.password);
     const [credential] = await this.db
       .insert(localEmailAuthCredentials)
       .values({
@@ -105,6 +127,24 @@ export class LocalEmailAuthGateway implements EmailAuthGateway {
       displayName: credential.displayName,
       emailVerified: false,
     };
+  }
+
+  async updatePassword(input: EmailAuthUpdatePasswordInput): Promise<EmailAuthUpdatePasswordResult> {
+    const passwordHash = await hashLocalEmailPassword(input.newPassword);
+    const [credential] = await this.db
+      .update(localEmailAuthCredentials)
+      .set({ passwordHash, updatedAt: new Date() })
+      .where(eq(localEmailAuthCredentials.emailNormalized, input.email))
+      .returning();
+
+    if (!credential) {
+      throw new EmailAuthGatewayError(
+        'account_not_found',
+        'No local email/password account exists for this email.'
+      );
+    }
+
+    return { authUid: credential.authUid };
   }
 
   private async findByEmail(emailNormalized: string) {

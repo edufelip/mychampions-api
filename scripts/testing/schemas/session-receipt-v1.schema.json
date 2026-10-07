@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/session-receipt-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{24}$"
+    },
+    "repositories": {
+      "type": "object",
+      "required": ["server", "client"],
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sha": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{40}$"
+          },
+          "dirty": {
+            "type": "boolean"
+          },
+          "workingTreeHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": ["sha", "dirty", "workingTreeHash"]
+      }
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "utc-timestamp"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "utc-timestamp"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,48}$"
+          },
+          "op": {
+            "enum": [
+              "seed",
+              "restart",
+              "stop",
+              "snapshot",
+              "connection-snapshot"
+            ]
+          },
+          "outcome": {
+            "const": "completed"
+          }
+        },
+        "required": ["id", "op", "outcome"]
+      }
+    },
+    "result": {
+      "enum": ["passed", "harness-blocked", "cancelled"]
+    },
+    "reason": {
+      "enum": [null, "SIGINT", "SIGTERM", "timeout", "parent-closed"]
+    },
+    "cleanup": {
+      "enum": ["cleaned", "failed-recovery-ledger-retained"]
+    },
+    "error": {
+      "type": ["string", "null"]
+    },
+    "exitCode": {
+      "enum": [0, 2, 130, 143]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runId",
+    "repositories",
+    "startedAt",
+    "finishedAt",
+    "requests",
+    "result",
+    "reason",
+    "cleanup",
+    "error",
+    "exitCode"
+  ]
+}

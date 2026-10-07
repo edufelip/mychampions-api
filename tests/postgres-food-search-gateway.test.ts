@@ -1,3 +1,4 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -5,9 +6,7 @@ import {
   PostgresFoodSearchGateway,
 } from '../src/integrations/food-search-gateway';
 
-const databaseUrl =
-  process.env.FOOD_CATALOG_DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_food_catalog_local';
+const databaseUrl = await requireOwnedTestDatabase('FOOD_CATALOG_DATABASE_URL');
 
 describe('PostgresFoodSearchGateway', () => {
   it('normalizes request locale and numeric catalog fields while respecting the result limit', async () => {

@@ -64,7 +64,8 @@ describe('local server stack contract', () => {
 
     expect(localSetupSection).toContain('bun run local:db:up');
     expect(localSetupSection).toContain('bun run server:db:migrate');
-    expect(localSetupSection).toContain('bun run server:test');
+    expect(localSetupSection).toContain('./scripts/server-bun.sh run test:unit');
+    expect(localSetupSection).toContain('./scripts/server-bun.sh run test:integration');
     expect(localSetupSection).toContain('bun run server:dev');
     expect(localSetupSection).not.toContain('npm run ');
   });

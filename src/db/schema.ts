@@ -161,10 +161,11 @@ export const passwordResetRequests = pgTable(
   {
     id: text('id').primaryKey(),
     emailNormalized: text('email_normalized').notNull(),
-    status: text('status', { enum: ['pending'] }).notNull().default('pending'),
+    status: text('status', { enum: ['pending', 'consumed'] }).notNull().default('pending'),
     tokenDigest: text('token_digest').notNull(),
     requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
   },
   (table) => [
     index('password_reset_requests_email_requested_idx').on(table.emailNormalized, table.requestedAt),

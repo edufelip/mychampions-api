@@ -161,6 +161,9 @@ describe('email auth API', () => {
         async createAccount() {
           throw new Error('createAccount should not be called');
         },
+        async updatePassword() {
+          throw new Error('updatePassword should not be called');
+        },
       },
     } as Parameters<typeof createApp>[0] & { emailAuthGateway: unknown });
 
@@ -205,6 +208,9 @@ describe('email auth API', () => {
             displayName: 'New User',
             emailVerified: false,
           };
+        },
+        async updatePassword() {
+          throw new Error('updatePassword should not be called');
         },
       },
     } as Parameters<typeof createApp>[0] & { emailAuthGateway: unknown });

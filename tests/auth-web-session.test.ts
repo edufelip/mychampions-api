@@ -89,6 +89,9 @@ function makeApp(
       async createAccount() {
         throw new Error('not implemented');
       },
+      async updatePassword() {
+        throw new Error('not implemented');
+      },
     },
   });
 }

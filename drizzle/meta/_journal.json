@@ -176,6 +176,13 @@
       "when": 1784683683064,
       "tag": "0024_mighty_nehzno",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786469102873,
+      "tag": "0025_password_reset_consumed_state",
+      "breakpoints": true
     }
   ]
 }
