@@ -344,7 +344,7 @@ refreshes both canonical provider privileges and the server snapshot inside
 the bounded timeout loop. It succeeds only when both reads match the expected
 independent privileges in the same iteration.
 
-`GET /connections` lists the authenticated user's student-side and professional-side connections from local Postgres table `connections`. The mobile client uses this endpoint for `getMyConnections()` when a local server bearer token is available.
+`GET /connections` lists the authenticated user's student-side and professional-side connections from local Postgres table `connections`. On active and pending connections where the caller is the professional, each record also carries `studentDisplayName` (the student's trimmed profile display name, or `null`), matching the names `GET /professional/students` already returns; student-side records carry no student fields. The mobile client uses this endpoint for `getMyConnections()` when a local server bearer token is available.
 
 `POST /connections/invite-submissions` accepts a student invite code, looks up an active local Postgres `invite_codes` row, blocks duplicate active/pending student-professional-specialty connections, enforces the 10-unique-pending-students cap, and creates a `pending_confirmation` row in `connections`. The mobile `submitInviteCode()` source requires this endpoint plus local server bearer auth; missing local server URL/auth fails closed without calling any provider-era function path.
 

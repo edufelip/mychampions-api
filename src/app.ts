@@ -2118,13 +2118,27 @@ export function createApp(deps: CreateAppDeps = {}) {
 
       const connections = await connectionRepository.listForAuthUid(auth.sub);
       return {
-        connections: connections.map((connection) => ({
-          id: connection.id,
-          status: connection.status,
-          canceledReason: connection.canceledReason,
-          specialty: connection.specialty,
-          professionalAuthUid: connection.professionalAuthUid,
-        })),
+        connections: await Promise.all(
+          connections.map(async (connection) => {
+            const record = {
+              id: connection.id,
+              status: connection.status,
+              canceledReason: connection.canceledReason,
+              specialty: connection.specialty,
+              professionalAuthUid: connection.professionalAuthUid,
+            };
+            // The professional sees the student's name for the same connections the
+            // roster lists (active and pending); students receive no student fields.
+            if (
+              connection.professionalAuthUid !== auth.sub ||
+              (connection.status !== 'active' && connection.status !== 'pending_confirmation')
+            ) {
+              return record;
+            }
+            const profile = await profileRepository.findByAuthUid(connection.studentAuthUid);
+            return { ...record, studentDisplayName: profile?.displayName?.trim() || null };
+          })
+        ),
       };
     })
     .get(

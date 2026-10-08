@@ -341,6 +341,69 @@ describe('connections API', () => {
     });
   });
 
+  it('adds the student name only on active and pending connections the caller coaches', async () => {
+    const profileRepository = makeProfileRepository();
+    profileRepository.findByAuthUid = async (authUid: string) =>
+      authUid === 'student-1'
+        ? {
+            authUid,
+            displayName: '  Pia Pending  ',
+            emailNormalized: 'pia@example.test',
+            lockedRole: 'student',
+            acceptedTermsVersion: null,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+          }
+        : null;
+    const row = (
+      id: string,
+      status: Connection['status'],
+      professionalAuthUid: string,
+      studentAuthUid: string
+    ): Connection => ({
+      id,
+      status,
+      canceledReason: null,
+      specialty: 'fitness_coach',
+      professionalAuthUid,
+      studentAuthUid,
+      sourceInviteCodeId: 'fitness_coach',
+      sourceInviteCodeValue: 'FIT123',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      endedAt: null,
+    });
+    const app = createApp({
+      profileRepository,
+      supportMessageRepository,
+      connectionRepository: makeConnectionRepository({
+        async listForAuthUid(authUid: string): Promise<Connection[]> {
+          return [
+            row('pending-own', 'pending_confirmation', authUid, 'student-1'),
+            row('active-no-profile', 'active', authUid, 'student-2'),
+            row('ended-own', 'ended', authUid, 'student-1'),
+            row('as-student', 'active', 'professional-9', authUid),
+          ];
+        },
+      }),
+    });
+    const session = await issueSession(app);
+
+    const response = await app.handle(
+      new Request('http://server.test/connections', {
+        headers: { authorization: `Bearer ${session.accessToken}` },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { connections: Record<string, unknown>[] };
+    const byId = Object.fromEntries(body.connections.map((c) => [c.id, c]));
+    expect(byId['pending-own']?.studentDisplayName).toBe('Pia Pending');
+    expect(byId['active-no-profile']?.studentDisplayName).toBeNull();
+    expect(byId['ended-own']).not.toHaveProperty('studentDisplayName');
+    expect(byId['as-student']).not.toHaveProperty('studentDisplayName');
+  });
+
   it('creates a pending connection from an invite code for the authenticated student', async () => {
     let submitted: { code: string; studentAuthUid: string } | null = null;
     const app = createApp({
