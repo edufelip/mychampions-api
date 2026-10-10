@@ -149,6 +149,7 @@ Service variables live in Railway, not in this repository. With
 | `REVENUECAT_SECRET_API_KEY`, `REVENUECAT_WEBHOOK_AUTHORIZATION`, `REVENUECAT_WEBHOOK_SIGNING_SECRET` | The RevenueCat webhook stays disabled in production until all three are set. |
 | `WEB_ALLOWED_ORIGINS` | Empty by default in production, so no website gets credentialed browser access. |
 | `PORT` | Defaults to `3400`; the Railway domain must target the port the server listens on. |
+| `TRUSTED_PROXY_HEADER=x-real-ip` | The only header the auth rate limiter trusts for the client address (Railway's edge sets `X-Real-IP`). The server refuses to start in production without it. |
 
 `MEAL_PHOTO_ANALYZER`, `AUTH_RATE_LIMIT_WINDOW_MS`, and `AUTH_RATE_LIMIT_MAX`
 are optional.
