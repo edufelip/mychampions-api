@@ -33,9 +33,19 @@ can't be sure a narrower run is safe.
   anything under `drizzle/` (schema-of-record changes are cross-cutting)
 - The CI workflow files themselves (`.github/workflows/**`)
 - The classifier script itself (`scripts/ci/**`)
+- Deploy/infra files and the env contract: `infra/**`, `.env.example`.
+  Contract tests (`tests/vm-deployment-contract.test.ts`,
+  `tests/railway-start.test.ts`, `tests/stack-contract.test.ts`, …) read or
+  run these files instead of importing them, and `bun test --changed` only
+  follows imports, so a narrow run would select zero tests for them.
 - Any path that isn't recognized as one of the above, `src/**`, `tests/**`,
-  or a known-inert path (`README.md`, `docs/**`, `*.md`, `.gitignore`,
-  `.env.example`, `infra/**`) — fail conservative, not silent.
+  or a known-inert path (`README.md`, `docs/**`, `*.md`, `.gitignore`) —
+  fail conservative, not silent.
+
+If you add a test that reads or runs a file outside `src/**`/`tests/**`, make
+sure that path forces full scope here. Known gap: `tests/stack-contract.test.ts`
+also asserts on `README.md` text, which stays inert by choice, so a README-only
+PR skips that test; the full-suite run on the push to `main` still catches it.
 
 ## Verifying locally
 
@@ -50,8 +60,9 @@ bun test --changed=<merge-base-sha> --pass-with-no-tests
 ```
 
 `tests/ci-classify-change-scope.test.ts` covers the classifier's decision
-logic directly (dependency/tooling/workflow/classifier changes → full scope;
-src/tests/docs-only changes → narrow; unrecognized paths → full scope).
+logic directly (dependency/tooling/workflow/classifier/infra/`.env.example`
+changes → full scope; src/tests/docs-only changes → narrow; unrecognized
+paths → full scope).
 
 ## Database in CI
 
