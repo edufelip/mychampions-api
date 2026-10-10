@@ -82,3 +82,59 @@ export async function fingerprintOwnedRepository(
     workingTreeHash: fingerprint.digest("hex"),
   };
 }
+
+/**
+ * Identity recorded for a client checkout that is absent from a server-only
+ * run (hosted server CI checks out only the server repository). The
+ * manifest schema, which the client vendors by content hash, still requires a
+ * client identity. Git's null object ID and an all-zero working-tree hash are
+ * values no real checkout produces, so any consumer that compares this
+ * identity with a real client fails closed.
+ */
+export const ABSENT_REPOSITORY_FINGERPRINT: Readonly<OwnedRepositoryFingerprint> =
+  Object.freeze({
+    sha: "0".repeat(40),
+    dirty: false,
+    workingTreeHash: "0".repeat(64),
+  });
+
+export type ClientCheckoutRequirement = "required" | "optional";
+
+/**
+ * Fingerprint the server and client worktrees for an owned run. Only an
+ * explicitly optional client checkout that does not exist at all is recorded
+ * as absent; a present but unreadable client still fails the preflight.
+ */
+export async function fingerprintOwnedRepositories(input: {
+  server: string;
+  client: string;
+  clientCheckout: ClientCheckoutRequirement;
+}): Promise<{
+  repositories: {
+    server: OwnedRepositoryFingerprint;
+    client: OwnedRepositoryFingerprint;
+  };
+  clientCheckout: "present" | "absent";
+}> {
+  const server = await fingerprintOwnedRepository(input.server);
+  if (input.clientCheckout === "optional") {
+    try {
+      await lstat(input.client);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return {
+          repositories: { server, client: { ...ABSENT_REPOSITORY_FINGERPRINT } },
+          clientCheckout: "absent",
+        };
+      }
+      throw new Error("Cannot inspect client checkout");
+    }
+  }
+  const client = await fingerprintOwnedRepository(input.client);
+  return { repositories: { server, client }, clientCheckout: "present" };
+}

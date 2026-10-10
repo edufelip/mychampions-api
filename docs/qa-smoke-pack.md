@@ -8,7 +8,7 @@ Default smoke when Skill surface is `api` for the MyChampions family.
 
 | Layer | What runs | Notes |
 |---|---|---|
-| Automated | `bun test` (cwd `server`) | Or parent `bun run server:test` from `~/Projects/MyChampions` |
+| Automated | `bun run test:unit` and `bun run test:integration` (cwd `server`, Bun 1.3.14) | Or `./scripts/server-bun.sh run test:unit` / `run test:integration` from `~/Projects/MyChampions`. Plain `bun test` / `server:test` reports every `tests/postgres-*` file as an error by design (see [testing.md](testing.md)) |
 | Human pass | Contract / security / data-shape slice | Auth session + protected route fail-closed; no prod mutations |
 
 ## Minimum checkpoints

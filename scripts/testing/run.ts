@@ -13,11 +13,26 @@ if (Bun.version !== requiredBun) {
   );
   process.exit(2);
 }
+const usage =
+  "Usage: bun scripts/testing/run.ts unit [--changed=<commit-sha>] | integration [--server-only]";
 const mode = process.argv[2];
-if (!["unit", "integration"].includes(mode ?? "") || process.argv.length > 3) {
-  console.error("Usage: bun scripts/testing/run.ts unit|integration");
+const option = process.argv[3];
+// unit --changed=<sha>: hosted CI narrows unit files to those Bun relates to the
+// diff. integration --server-only: hosted CI has no client checkout; the owned
+// database, guard, migrations, seeds and full file selection are unchanged.
+const changedMatch = /^--changed=([0-9a-f]{7,40})$/.exec(option ?? "");
+if (
+  !["unit", "integration"].includes(mode ?? "") ||
+  process.argv.length > 4 ||
+  (option !== undefined &&
+    !(mode === "unit" && changedMatch) &&
+    !(mode === "integration" && option === "--server-only"))
+) {
+  console.error(usage);
   process.exit(2);
 }
+const changedSince = changedMatch?.[1];
+const serverOnly = option === "--server-only";
 const files = (await readdir(path.join(root, "tests")))
   .filter(
     (file) =>
@@ -37,6 +52,9 @@ if (mode === "unit") {
       process.execPath,
       "--no-env-file",
       "test",
+      ...(changedSince
+        ? [`--changed=${changedSince}`, "--pass-with-no-tests"]
+        : []),
       ...files.map((file) => `./tests/${file}`),
     ],
     { stdout: "inherit", stderr: "inherit" },
@@ -45,7 +63,9 @@ if (mode === "unit") {
   process.on("SIGTERM", () => child.kill("SIGTERM"));
   process.exitCode = await child.exited;
 } else {
-  const runtime = await createOwnedTestRuntime();
+  const runtime = await createOwnedTestRuntime({
+    clientCheckout: serverOnly ? "optional" : "required",
+  });
   const { manifest, runRoot, env, persist } = runtime;
   const { runId, repositories } = manifest;
   let child: ReturnType<typeof Bun.spawn> | undefined;
@@ -133,6 +153,8 @@ if (mode === "unit") {
           runId,
           repositories,
           dataMode: "postgres",
+          scope: serverOnly ? "server-only" : "server-and-client",
+          clientCheckout: runtime.clientCheckout,
           fixtureSummary,
           requestedFiles: files,
           attempts,

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import type { ApplicationFixtures } from "./fixtures";
-import { createOwnedTestRuntime } from "./owned-runtime";
+import {
+  createOwnedTestRuntime,
+  OWNED_SESSION_AUTH_RATE_LIMIT_MAX,
+} from "./owned-runtime";
 import { assertTestDocument } from "./document-validation";
 
 // Explicit local-Docker verification of the private browser/native handoff boundary.
@@ -182,6 +185,8 @@ try {
   const direct = await createOwnedTestRuntime();
   try {
     await direct.start();
+    // Direct/integration runtimes keep the production auth rate limit.
+    assert.equal(direct.env.AUTH_RATE_LIMIT_MAX, undefined);
     await assert.rejects(direct.start(), /start only once/);
     const executingTest = Bun.spawn(
       [process.execPath, "--no-env-file", "-e", "await Bun.sleep(60000)"],
@@ -242,6 +247,10 @@ try {
         !env.REVENUECAT_SECRET_API_KEY,
     );
     assert.equal(env.WEB_ALLOWED_ORIGINS, "http://127.0.0.1:42001");
+    assert.equal(
+      env.AUTH_RATE_LIMIT_MAX,
+      String(OWNED_SESSION_AUTH_RATE_LIMIT_MAX),
+    );
   }
   assert.notEqual(
     fixtures[0]!.accounts.coach.authUid,
@@ -259,6 +268,22 @@ try {
     signal: AbortSignal.timeout(5000),
   });
   assert.equal(response.status, 201);
+  // Native journeys sign in repeatedly through one loopback IP. The owned
+  // session budget must not throttle past the production default of 20.
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const repeated = await fetch(`${ready[0]!.apiOrigin}/auth/email/sign-in`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: account.email,
+        password: account.password,
+        sessionMode: "bearer",
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(repeated.status, 201, `repeated sign-in ${attempt + 2}`);
+    await repeated.arrayBuffer();
+  }
   const auth = (await response.json()) as {
     accessToken: string;
     profile: { authUid: string };
@@ -335,6 +360,7 @@ try {
       "shared acquire single-start and idempotent release",
       "distinct DB/API ports and fixture owners",
       "provider credentials excluded",
+      "owned session auth rate limit above the production default",
       "canonical seed hash equal",
       "normal auth/write API and persisted restart",
       "cleaned stop",

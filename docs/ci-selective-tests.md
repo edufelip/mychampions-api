@@ -1,10 +1,18 @@
 # Selective test execution in CI
 
-`.github/workflows/ci.yml` narrows the `test` job to only the tests related to
-what a PR actually changed, instead of always running the full `bun test`
-suite. This is a strict narrowing — it never widens coverage beyond what the
-full suite already runs, and it always falls back to the full suite when it
-can't be sure a narrower run is safe.
+`.github/workflows/ci.yml` runs on `pull_request` (and on pushes to `main`), so
+every pull request runs the workflow YAML from its own branch. A change to this
+workflow takes effect on the pull request that makes it.
+
+The `Test` job has two parts:
+
+- **Unit tests** (every `tests/*.test.ts` except `tests/postgres-*`). Pull
+  requests narrow these to the files related to what the PR changed. This is a
+  strict narrowing: it never widens coverage beyond the full unit suite, and it
+  falls back to the full suite whenever it can't be sure a narrower run is safe.
+- **Integration tests** (every `tests/postgres-*.test.ts`). These always run in
+  full, on every pull request and every push, through the owned disposable
+  Postgres runner. See [Database in CI](#database-in-ci).
 
 ## How it works
 
@@ -16,15 +24,23 @@ can't be sure a narrower run is safe.
    one of: a full-scope trigger, a known-inert path (docs, markdown), a
    normal source/test path, or unrecognized. Any full-scope trigger or any
    unrecognized path sets `full_scope=true`.
-3. If `full_scope` is true, `test` runs `bun test` (everything). Otherwise it
-   runs `bun test --changed=<merge-base> --pass-with-no-tests`, which lets
-   Bun's own dependency graph pick the related test files. `--pass-with-no-tests`
-   means a docs-only change that touches zero tests doesn't fail the job.
-4. `typecheck` and `docker-build` are unaffected by this — they're cheap
+3. If `full_scope` is true, the unit step runs `bun run test:unit` (every unit
+   file). Otherwise it runs
+   `bun --no-env-file scripts/testing/run.ts unit --changed=<merge-base>`, which
+   passes the explicit unit file list to `bun test --changed=<merge-base>
+   --pass-with-no-tests`, so Bun's own dependency graph picks the related unit
+   files and never a `tests/postgres-*` file. `--pass-with-no-tests` means a
+   docs-only change that touches zero unit tests doesn't fail the step. The
+   runner accepts only a hex commit ID after `--changed=`.
+4. The integration step is not narrowed. It runs all `tests/postgres-*` files
+   (about 20 s of tests locally) whatever the scope, because the harness it
+   depends on includes paths the classifier treats as inert, such as
+   `infra/docker-compose.test.yml`.
+5. `typecheck` and `docker-build` are unaffected by this — they're cheap
    enough to always run in full regardless of scope.
-5. Any push to `main` (a merge or a direct push) always runs the full suite;
-   only pull requests get narrowed. That's the authoritative build, not a
-   candidate to trust a partial run for.
+6. Any push to `main` (a merge or a direct push) always runs the full unit
+   suite; only pull requests get narrowed. That's the authoritative build, not
+   a candidate to trust a partial run for.
 
 ## What forces full scope
 
@@ -41,9 +57,9 @@ can't be sure a narrower run is safe.
 
 ```bash
 # Simulate a PR whose only change is under src/ or tests/ — narrow, related
-# tests only.
+# unit tests only.
 bun scripts/ci/classify-change-scope.ts <base-sha> <head-sha>
-bun test --changed=<merge-base-sha> --pass-with-no-tests
+bun --no-env-file scripts/testing/run.ts unit --changed=<merge-base-sha>
 
 # Simulate a docs-only PR — narrow, zero tests, exits 0.
 # Simulate a package.json/bun.lock/tsconfig change — full scope.
@@ -55,17 +71,54 @@ src/tests/docs-only changes → narrow; unrecognized paths → full scope).
 
 ## Database in CI
 
-The `test` job runs a `postgres:16-alpine` service, creates the three app
-databases (mirroring `infra/local-postgres/initdb/001-catalog-databases.sql`),
-and applies `bun run db:migrate` before testing. That gives every test that
-needs the `mychampions_server_local` schema a real, empty, freshly-migrated
-Postgres to run against.
+The integration step runs `bun run test:integration:server-only`. That is the
+same owned runner developers use (`bun run test:integration`, see
+[testing.md](testing.md)), with the same test database guard:
 
-It does **not** attempt to reproduce `mychampions_food_catalog_local` /
-`mychampions_exercise_catalog_local` content — those only get real rows from
-a production mirror (`bun run local:db:mirror`), and pulling production data
-into a hosted CI runner isn't something this workflow does. The three tests
-that assert against real catalog rows (`tests/postgres-exercise-search-gateway.test.ts`,
-`tests/postgres-food-search-gateway.test.ts`) detect `CI=true` (set
-automatically by GitHub Actions) and skip themselves there, with a comment
-explaining why. They still run normally in local dev against a mirrored DB.
+1. A fresh Docker Compose Postgres (`infra/docker-compose.test.yml`) with run
+   and owner-digest labels, published on a random `127.0.0.1` port with tmpfs
+   storage. The runner checks the container's labels before using it.
+2. A private manifest under `.qa/runtime/<run-id>/`, an owner token, and an
+   in-database ownership marker in each of the three databases
+   (`mc_test_<run-id>`, `_food`, `_exercise`).
+3. Canonical server migrations from `drizzle/`, then three synthetic rows per
+   catalog (`scripts/testing/seed.ts`).
+4. Every `tests/postgres-*` file, one at a time, with a minimal explicit
+   environment. Tests refuse any database that lacks the manifest, owner token
+   and marker.
+5. Cleanup of the exact owned container and network, then a receipt.
+
+Hosted CI checks out only this repository (no client or catalog service
+checkout, and no cross-repository token), so two things differ from a local
+run, and nothing else does:
+
+- `--server-only` lets the client checkout (`../mychampions`) be absent. The
+  manifest schema still needs a client identity, so the run records git's null
+  object ID (`0` × 40) and an all-zero working-tree hash for it. No real
+  checkout has those values, so anything that compares this identity with a
+  real client fails closed. The receipt says `"scope": "server-only"` and
+  `"clientCheckout": "absent"`. Browser and native sessions
+  (`scripts/testing/session.ts`) always require the real client checkout.
+- The catalog schemas come from the pinned copies in
+  `scripts/testing/catalog-schemas/` (food and exercise service schemas, with
+  source commit and SHA-256 in `provenance.json`). Locally, when
+  `../mychampionsapi-food` or `../mychampionsapi-exercises` exists, the runner
+  refuses to start unless the copy equals that checkout's exported schema.
+  Refresh the copies with `bun --no-env-file scripts/testing/catalog-schemas.ts --sync`
+  and check them with `--check` (see [testing.md](testing.md#catalog-schema-copies)).
+
+Because every owned run seeds the catalogs, the catalog gateway cases in
+`tests/postgres-{exercise,food}-search-gateway.test.ts` run in CI too; they no
+longer skip themselves when `CI=true`.
+
+The job pulls the Postgres image in its own step first, so a registry problem
+is not reported as a harness failure. After the integration step, the job
+prints the receipt (identities, counts and result classes, no credentials) and
+runs an independent census: it fails if any container or network labelled with
+one of the job's run IDs (`com.mychampions.test.run=<run-id>`, one per
+`.qa/runtime/<run-id>/` directory) remains.
+
+The job no longer runs a GitHub Actions Postgres service. Plain `bun test`
+against such a database fails every `tests/postgres-*` file with
+`Missing MC_TEST_MANIFEST`, by design: the guard does not accept a database it
+did not create, however it was provisioned.

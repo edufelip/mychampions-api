@@ -16,7 +16,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "test:unit": "bun --no-env-file scripts/testing/run.ts unit",
-    "test:integration": "bun --no-env-file scripts/testing/run.ts integration"
+    "test:integration": "bun --no-env-file scripts/testing/run.ts integration",
+    "test:integration:server-only": "bun --no-env-file scripts/testing/run.ts integration --server-only"
   },
   "dependencies": {
     "@elysiajs/bearer": "~1.4.0",

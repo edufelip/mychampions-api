@@ -1,4 +1,7 @@
-import { validateOwnedWebOrigins } from "./owned-runtime";
+import {
+  OWNED_SESSION_AUTH_RATE_LIMIT_MAX,
+  validateOwnedWebOrigins,
+} from "./owned-runtime";
 import { assertTestDocument } from "./document-validation";
 
 export type SessionRequest =
@@ -26,6 +29,21 @@ export function parseSessionOptions(args: string[]) {
     } else throw new Error("Invalid owned session arguments");
   }
   return { webOrigins: validateOwnedWebOrigins(origins), deadlineMs };
+}
+
+/**
+ * Runtime options for a browser/native owned session. Sessions always need the
+ * real client checkout, and their API gets the raised owned-session auth rate
+ * limit because one journey signs in repeatedly through one loopback IP.
+ */
+export function ownedSessionRuntimeOptions(
+  options: ReturnType<typeof parseSessionOptions>,
+) {
+  return {
+    webOrigins: options.webOrigins,
+    authRateLimitMax: OWNED_SESSION_AUTH_RATE_LIMIT_MAX,
+    clientCheckout: "required" as const,
+  };
 }
 
 export function parseSessionRequest(value: unknown): SessionRequest {

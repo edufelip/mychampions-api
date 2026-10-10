@@ -17,7 +17,11 @@ import {
   type DatabaseKey,
 } from "../../tests/helpers/test-database";
 import { cleanupOwnedRun } from "./cleanup";
-import { fingerprintOwnedRepository } from "./repository-fingerprint";
+import { loadCatalogSchemas } from "./catalog-schemas";
+import {
+  fingerprintOwnedRepositories,
+  type ClientCheckoutRequirement,
+} from "./repository-fingerprint";
 import { queryOwnedProcess } from "./process-query";
 import {
   assertResourceManifest,
@@ -53,22 +57,87 @@ export function validateOwnedWebOrigins(origins: readonly string[]) {
   });
 }
 
+/**
+ * Auth rate-limit budget for owned browser/native sessions only. Native and
+ * browser journeys sign in many times through one loopback IP, which the
+ * production default (`AUTH_RATE_LIMIT_MAX`, 20 per 60 s per IP) would throttle
+ * mid-journey. The integration runner keeps the production default, and no
+ * deployment configuration reads this constant.
+ */
+export const OWNED_SESSION_AUTH_RATE_LIMIT_MAX = 1000;
+
+export function validateOwnedAuthRateLimitMax(value: number) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 100_000)
+    throw new Error(
+      "Owned auth rate limit must be an integer from 1 to 100000",
+    );
+  return value;
+}
+
+/**
+ * The complete environment for owned test children and API processes. Only
+ * these keys reach them: developer database URLs and provider credentials from
+ * the caller never do. AUTH_RATE_LIMIT_MAX is present only when the caller
+ * (an owned session) asks for it; otherwise the API keeps the default budget.
+ */
+export function buildOwnedTestEnvironment(input: {
+  /** Only PATH and HOME are read from the caller's environment. */
+  base: NodeJS.ProcessEnv;
+  manifestPath: string;
+  ownerToken: string;
+  password: string;
+  port: number;
+  targets: Record<DatabaseKey, string>;
+  webOrigins?: readonly string[];
+  authRateLimitMax?: number;
+}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    PATH: input.base.PATH,
+    HOME: input.base.HOME,
+    APP_VARIANT: "dev",
+    NODE_ENV: "test",
+    GCS_BUCKET: "",
+    REVENUECAT_SECRET_API_KEY: "",
+    MC_TEST_MANIFEST: input.manifestPath,
+    MC_TEST_OWNER_TOKEN: input.ownerToken,
+  };
+  if (input.webOrigins) env.WEB_ALLOWED_ORIGINS = input.webOrigins.join(",");
+  if (input.authRateLimitMax !== undefined)
+    env.AUTH_RATE_LIMIT_MAX = String(
+      validateOwnedAuthRateLimitMax(input.authRateLimitMax),
+    );
+  for (const key of Object.keys(input.targets) as DatabaseKey[])
+    env[key] =
+      `postgres://mc_test:${input.password}@127.0.0.1:${input.port}/${input.targets[key]}`;
+  return env;
+}
+
 export async function createOwnedTestRuntime(
-  options: { webOrigins?: readonly string[] } = {},
+  options: {
+    webOrigins?: readonly string[];
+    /** Owned sessions only; see OWNED_SESSION_AUTH_RATE_LIMIT_MAX. */
+    authRateLimitMax?: number;
+    /** "optional" only for the server-only integration runner (hosted CI). */
+    clientCheckout?: ClientCheckoutRequirement;
+  } = {},
 ) {
   // Validate caller data before creating even a private ledger.
   const webOrigins =
     options.webOrigins && validateOwnedWebOrigins(options.webOrigins);
+  const authRateLimitMax =
+    options.authRateLimitMax === undefined
+      ? undefined
+      : validateOwnedAuthRateLimitMax(options.authRateLimitMax);
   // Fingerprint both worktrees before creating a runtime directory, ledger,
   // compose environment, or any other owned resource. A non-regular untracked
   // entry is a bounded preflight failure, never a reason to follow a symlink.
-  const repositories: TestManifest["repositories"] = {};
-  for (const [name, dir] of [
-    ["server", root],
-    ["client", path.resolve(root, "../mychampions")],
-  ] as const) {
-    repositories[name] = await fingerprintOwnedRepository(dir);
-  }
+  const { repositories, clientCheckout } = await fingerprintOwnedRepositories({
+    server: root,
+    client: path.resolve(root, "../mychampions"),
+    clientCheckout: options.clientCheckout ?? "required",
+  });
+  // A drifted catalog schema copy blocks before any owned resource exists.
+  await loadCatalogSchemas();
 
   const runId = randomBytes(12).toString("hex");
   const ownerToken = randomBytes(32).toString("hex");
@@ -226,6 +295,7 @@ export async function createOwnedTestRuntime(
     manifestPath,
     runRoot,
     env,
+    clientCheckout,
     persist,
     cancel,
     get cancelled() {
@@ -267,20 +337,19 @@ export async function createOwnedTestRuntime(
         throw new Error("Unexpected database port binding");
       manifest.port = Number(binding.split(":")[1]);
       await persist();
-      Object.assign(env, {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        APP_VARIANT: "dev",
-        NODE_ENV: "test",
-        GCS_BUCKET: "",
-        REVENUECAT_SECRET_API_KEY: "",
-        MC_TEST_MANIFEST: manifestPath,
-        MC_TEST_OWNER_TOKEN: ownerToken,
-      });
-      if (webOrigins) env.WEB_ALLOWED_ORIGINS = webOrigins.join(",");
-      for (const key of Object.keys(targets) as DatabaseKey[])
-        env[key] =
-          `postgres://mc_test:${password}@127.0.0.1:${manifest.port}/${targets[key]}`;
+      Object.assign(
+        env,
+        buildOwnedTestEnvironment({
+          base: process.env,
+          manifestPath,
+          ownerToken,
+          password,
+          port: manifest.port,
+          targets,
+          webOrigins,
+          authRateLimitMax,
+        }),
+      );
       await writeFile(path.join(runRoot, "private.json"), JSON.stringify(env), {
         mode: 0o600,
       });

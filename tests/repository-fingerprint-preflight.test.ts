@@ -11,7 +11,11 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { fingerprintOwnedRepository } from "../scripts/testing/repository-fingerprint";
+import {
+  ABSENT_REPOSITORY_FINGERPRINT,
+  fingerprintOwnedRepositories,
+  fingerprintOwnedRepository,
+} from "../scripts/testing/repository-fingerprint";
 
 const scratchRoots: string[] = [];
 
@@ -123,12 +127,82 @@ describe("owned repository fingerprint preflight", () => {
       new URL("../scripts/testing/owned-runtime.ts", import.meta.url),
       "utf8",
     );
-    const fingerprintIndex = source.indexOf("fingerprintOwnedRepository(dir)");
+    const fingerprintIndex = source.indexOf(
+      "await fingerprintOwnedRepositories({",
+    );
     const mkdirIndex = source.indexOf("await mkdir(runRoot");
     expect(fingerprintIndex).toBeGreaterThanOrEqual(0);
     expect(mkdirIndex).toBeGreaterThan(fingerprintIndex);
     expect(source.slice(0, mkdirIndex)).not.toContain(
       "const manifest: TestManifest",
     );
+    // The catalog schema copies are checked before any owned resource too.
+    const catalogIndex = source.indexOf("await loadCatalogSchemas();");
+    expect(catalogIndex).toBeGreaterThan(fingerprintIndex);
+    expect(mkdirIndex).toBeGreaterThan(catalogIndex);
+  });
+
+  test("requires the client checkout unless a server-only run makes it optional", async () => {
+    const { directory: server } = await makeGitRepository("server-only");
+    const missingClient = path.join(server, "missing-client-checkout");
+
+    await expect(
+      fingerprintOwnedRepositories({
+        server,
+        client: missingClient,
+        clientCheckout: "required",
+      }),
+    ).rejects.toThrow("Cannot record repository identity.");
+
+    const serverOnly = await fingerprintOwnedRepositories({
+      server,
+      client: missingClient,
+      clientCheckout: "optional",
+    });
+    expect(serverOnly.clientCheckout).toBe("absent");
+    expect(serverOnly.repositories.server).toEqual(
+      await fingerprintOwnedRepository(server),
+    );
+    // Git's null object ID can never equal a real client commit.
+    expect(serverOnly.repositories.client).toEqual({
+      sha: "0".repeat(40),
+      dirty: false,
+      workingTreeHash: "0".repeat(64),
+    });
+    expect(serverOnly.repositories.client).not.toBe(
+      ABSENT_REPOSITORY_FINGERPRINT,
+    );
+  });
+
+  test("fingerprints a present client even when the checkout is optional", async () => {
+    const { directory: server } = await makeGitRepository("optional-server");
+    const { directory: client } = await makeGitRepository("optional-client");
+    const result = await fingerprintOwnedRepositories({
+      server,
+      client,
+      clientCheckout: "optional",
+    });
+    expect(result.clientCheckout).toBe("present");
+    expect(result.repositories.client).toEqual(
+      await fingerprintOwnedRepository(client),
+    );
+  });
+
+  test("never records a present but unreadable client checkout as absent", async () => {
+    const { directory: server } = await makeGitRepository("broken-server");
+    const notARepository = await mkdtemp(
+      path.join(os.tmpdir(), "owned-fingerprint-not-a-repository-"),
+    );
+    scratchRoots.push(notARepository);
+    // Inside the temp directory but outside any git repository.
+    const client = path.join(notARepository, "client");
+    await mkdir(client);
+    await expect(
+      fingerprintOwnedRepositories({
+        server,
+        client,
+        clientCheckout: "optional",
+      }),
+    ).rejects.toThrow("Cannot record repository identity.");
   });
 });

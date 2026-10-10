@@ -5,7 +5,11 @@ import { seedApplicationFixtures } from "./fixtures";
 import { captureDomainSnapshot } from "./domain-snapshot";
 import { captureConnectionSnapshot } from "./connection-snapshot";
 import { startOwnedApiServer } from "../../tests/helpers/test-api-server";
-import { parseSessionOptions, parseSessionRequest } from "./session-protocol";
+import {
+  ownedSessionRuntimeOptions,
+  parseSessionOptions,
+  parseSessionRequest,
+} from "./session-protocol";
 import { assertTestDocument } from "./document-validation";
 
 // Private parent-child stdio only. No fixture/reset/SQL operation is exposed over HTTP.
@@ -16,7 +20,9 @@ async function main() {
   if (Bun.version !== requiredBun)
     throw new Error(`Owned sessions require Bun ${requiredBun}`);
   const options = parseSessionOptions(process.argv.slice(2));
-  const runtime = await createOwnedTestRuntime(options);
+  const runtime = await createOwnedTestRuntime(
+    ownedSessionRuntimeOptions(options),
+  );
   let api: Awaited<ReturnType<typeof startOwnedApiServer>> | undefined;
   const startedAt = new Date().toISOString();
   const requests: { id: string; op: string; outcome: string }[] = [];

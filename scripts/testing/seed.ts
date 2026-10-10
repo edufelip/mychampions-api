@@ -1,21 +1,12 @@
-import path from 'node:path';
 import postgres from 'postgres';
 import { requireOwnedTestDatabase } from '../../tests/helpers/test-database';
+import { loadCatalogSchemas } from './catalog-schemas';
 
 export async function seedCatalogs(env: NodeJS.ProcessEnv = process.env) {
-  const workspace = path.resolve(import.meta.dir, '../../..');
-  const { FOOD_CATALOG_SCHEMA_SQL } = await import(
-    path.join(
-      workspace,
-      'mychampionsapi-food/src/catalog/infrastructure/postgres/catalog-persistence-schema.ts'
-    )
-  );
-  const { EXERCISE_CATALOG_SCHEMA_SQL } = await import(
-    path.join(
-      workspace,
-      'mychampionsapi-exercises/src/infrastructure/postgres/catalog-persistence-schema.ts'
-    )
-  );
+  // Pinned copies of the food/exercise service schemas; checked against the
+  // sibling checkouts whenever they exist (see catalog-schemas.ts).
+  const { food: FOOD_CATALOG_SCHEMA_SQL, exercise: EXERCISE_CATALOG_SCHEMA_SQL } =
+    await loadCatalogSchemas();
   const food = postgres(
     await requireOwnedTestDatabase('FOOD_CATALOG_DATABASE_URL', env),
     {

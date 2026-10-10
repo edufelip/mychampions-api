@@ -1,10 +1,10 @@
 # Owned test databases
 
-`bun run test:unit` enumerates non-Postgres test files. `bun run test:integration` owns a unique loopback-only Docker Compose Postgres instance, primary/food/exercise databases, private credentials, canonical server migrations, synthetic catalog seeds, serial test execution, and a receipt under ignored `.qa/runtime/<run-id>/`.
+`bun run test:unit` enumerates non-Postgres test files (`bun --no-env-file scripts/testing/run.ts unit --changed=<commit-sha>` narrows them to files related to changes since that commit). `bun run test:integration` owns a unique loopback-only Docker Compose Postgres instance, primary/food/exercise databases, private credentials, canonical server migrations, synthetic catalog seeds, serial test execution, and a receipt under ignored `.qa/runtime/<run-id>/`.
 
 Every Postgres test, including direct `bun test tests/postgres-*.test.ts`, requires an explicit URL, local allocated port, exact database/run manifest, owner token proof and a matching in-database marker before test mutations. Defaults and developer port 15432 are forbidden. Plain `bun test` runs non-DB tests but reports DB files as explicit errors if no owned run exists. Use the separate commands for a green intended scope.
 
-The bootstrap may create markers/databases only inside a fresh label-verified owned container. Migrations and seeds recheck ownership. Catalog schemas come from the sibling service schema modules; these checkouts are prerequisites. No public seed/reset endpoint is introduced. `scripts/testing/fixtures.ts` supplies attempt-scoped new/unonboarded, student, fitness coach, unrelated student/coach, pending and active connection accounts, a saved training template and a local-only draft payload. It uses existing typed repositories/gateway for declared preconditions; actions under test use the public API. Account passwords derive from the private owner token and scope, so partial seed retries are stable. A new scope is required after tested actions change fixture state. Credentials live in private fixture JSON and are removed on successful cleanup.
+The bootstrap may create markers/databases only inside a fresh label-verified owned container. Migrations and seeds recheck ownership. Catalog schemas come from pinned copies of the food and exercise service schemas in `scripts/testing/catalog-schemas/` (see [Catalog schema copies](#catalog-schema-copies)); when a sibling checkout exists, the runner refuses to start unless the copy matches it. No public seed/reset endpoint is introduced. `scripts/testing/fixtures.ts` supplies attempt-scoped new/unonboarded, student, fitness coach, unrelated student/coach, pending and active connection accounts, a saved training template and a local-only draft payload. It uses existing typed repositories/gateway for declared preconditions; actions under test use the public API. Account passwords derive from the private owner token and scope, so partial seed retries are stable. A new scope is required after tested actions change fixture state. Credentials live in private fixture JSON and are removed on successful cleanup.
 
 `tests/postgres-api-journeys.test.ts` starts the real app with Postgres repositories, loopback ephemeral HTTP, and run-owned signing/image storage. It verifies create/update, durable reads after process restart, assigned-copy independence, pending/active public connection transitions, unrelated/read-only access denial and unchanged data, validation rejection/retry, refresh rotation and logout revocation. Local email auth is exercised; Apple/Google/RevenueCat are not. Unrelated plan access is hidden as 404; the connected student's forbidden edit returns 403; sign-out returns 204. A 422 validation retry is distinct from the transport/save fault injection still required in later phases.
 
@@ -13,6 +13,59 @@ Test children use `--no-env-file` and a minimal explicit environment. Startup bl
 The private `compose.env` and `private.json` have mode 0600; reports contain identities, counts and result classifications, not credentials. Failure/SIGINT/SIGTERM run cleanup. Cleanup verifies the exact owned container and retains its ledger on failure; explicit recovery uses `MC_TEST_MANIFEST=<absolute owned manifest> bun scripts/testing/cleanup.ts`. It never deletes shared databases or kills arbitrary listeners.
 
 The owned runner itself does not modify production VM compose or provider configuration. The separately restored password-reset confirmation route adds canonical migration 0025 (`consumed_at`) and the atomic server-auth behavior documented in README; its local test evidence does not establish production deployment. Local integration receipts do not establish hosted CI, native, provider or store acceptance. See the client BL-018 plan/task card for remaining phases.
+
+## Hosted CI and server-only runs
+
+`.github/workflows/ci.yml` runs every `tests/postgres-*` file on every pull
+request and push with `bun run test:integration:server-only`. It is the owned
+runner above with one difference: the client checkout (`../mychampions`) may be
+absent, because hosted server CI checks out only this repository. An absent
+client is recorded in the manifest as git's null object ID and an all-zero
+working-tree hash, which no real checkout produces, and the receipt states
+`"scope": "server-only"` and `"clientCheckout": "absent"`. A client directory
+that exists but cannot be fingerprinted still fails the preflight. Without
+`--server-only`, a missing client still fails before any runtime directory or
+Docker resource exists. The guard, Compose isolation,
+migrations, seeds, file selection and cleanup are unchanged; CI does not use a
+GitHub Actions Postgres service. See
+[ci-selective-tests.md](ci-selective-tests.md#database-in-ci).
+
+## Catalog schema copies
+
+The server reads the food and exercise catalog tables but does not own their
+schemas. `scripts/testing/catalog-schemas/` holds pinned copies of
+`FOOD_CATALOG_SCHEMA_SQL` (`mychampionsapi-food`) and
+`EXERCISE_CATALOG_SCHEMA_SQL` (`mychampionsapi-exercises`), with the source
+repository, file, last source commit and SHA-256 in `provenance.json`. Seeding
+always uses the copies, so local and CI catalog databases get the same schema.
+Before acquiring anything, the runner checks each copy against its digest and,
+when the sibling checkout exists, against that checkout's exported schema; a
+mismatch blocks the run. After a catalog schema change is committed in its
+service:
+
+1. Check out the intended service commit in the sibling directory.
+2. Run `bun --no-env-file scripts/testing/catalog-schemas.ts --sync` from
+   `server/` (it refuses an uncommitted schema module).
+3. Run `bun --no-env-file scripts/testing/catalog-schemas.ts --check`.
+4. Commit the updated `scripts/testing/catalog-schemas/` files.
+
+The catalog gateway tests now always run against the three synthetic rows per
+catalog, locally and in CI.
+
+## Owned session auth rate limit
+
+The credential-adjacent auth routes share a per-IP budget
+(`AUTH_RATE_LIMIT_MAX`, default 20 per `AUTH_RATE_LIMIT_WINDOW_MS` = 60 s).
+Browser and native journeys sign in many times through one loopback IP, so
+owned sessions started by `scripts/testing/session.ts` give their API child
+`AUTH_RATE_LIMIT_MAX=1000` (`OWNED_SESSION_AUTH_RATE_LIMIT_MAX` in
+`owned-runtime.ts`); the window stays 60 s. Only the owned session environment
+carries this value. The integration runner keeps the production default, so
+`tests/postgres-*` still run against the default budget, and production
+configuration (`.env.example`, Railway, Nginx) is unchanged.
+`tests/owned-test-environment.test.ts` checks both budgets through the real
+app, and `verify-runtime-handoff.ts` signs in 25 times through one owned
+session.
 
 ## Shared acquisition and private runner sessions (P3/T10)
 
