@@ -1,0 +1,2 @@
+CREATE INDEX "support_messages_auth_uid_created_at_idx" ON "support_messages" USING btree ("auth_uid","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "support_messages_auth_uid_idempotency_key_idx" ON "support_messages" USING btree ("auth_uid","idempotency_key");

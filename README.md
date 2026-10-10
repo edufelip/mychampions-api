@@ -19,7 +19,7 @@ Local-first backend for MyChampions mobile app-domain logic.
 
 ## Local Setup
 
-The server stack is pinned to Bun `1.3.10` through `package.json` and `.bun-version`.
+The server stack is pinned to Bun `1.3.14` through `package.json` and `.bun-version`.
 
 From the parent workspace:
 
@@ -200,6 +200,48 @@ and image ID were verified.
 certificate for `PUBLIC_DOMAIN`; it redirects HTTP to HTTPS and proxies both
 the health route and API traffic to the active loopback slot.
 
+### Firebase distribution Dev API
+
+Firebase App Distribution receives only the `MyChampions Dev` mobile identities.
+Those builds must not point at the production API or database. The Dev runtime
+is isolated by an independent `mychampions_dev` database, non-superuser roles,
+JWT signing material, local-only media volume, container name, loopback port
+`3402`, and Nginx site. It may read the public food/exercise catalog through a
+read-only catalog role; it cannot use the production MyChampions database or
+GCS service-account mount.
+
+The Dev database provisioning script refuses alternate VM, container, database,
+or environment-file paths and defaults to no-write mode. Pass the public native
+OAuth audience values only when applying it; no server or provider secret is
+accepted from this command.
+
+```bash
+DEV_GOOGLE_ANDROID_CLIENT_ID=<android-client-id> \
+DEV_GOOGLE_IOS_CLIENT_ID=<ios-client-id> \
+DEV_GOOGLE_WEB_CLIENT_ID=<web-client-id> \
+DEV_APPLE_CLIENT_ID=com.edufelip.mychampions.dev \
+  bash infra/scripts/provision-dev-vm-db.sh --apply
+```
+
+For the existing VM, `dev.165.22.147.90.sslip.io` resolves directly to the VM
+without a production-DNS change. Before enabling the mobile CI secret, build and
+transfer an immutable `linux/amd64` image, extract the reviewed revision under
+`/opt/mychampions-dev-server/revisions/<revision>`, then bootstrap Dev-only TLS
+and deploy from that revision. The commands never replace production slots.
+
+```bash
+PUBLIC_DOMAIN=dev.165.22.147.90.sslip.io CERTBOT_EMAIL=<ops-email> \
+  sudo bash infra/scripts/bootstrap-dev-ingress.sh --apply
+
+sudo PUBLIC_DOMAIN=dev.165.22.147.90.sslip.io \
+  IMAGE_REPOSITORY=mychampions-dev-server IMAGE_TAG=<immutable-tag> IMAGE_PULL=false \
+  bash infra/scripts/deploy-dev-vm.sh
+```
+
+The `sslip.io` endpoint is an operational Dev convenience tied to this VM's
+public IP, not a production API hostname. A VM replacement requires explicit
+endpoint, certificate, and GitHub `ENV_FILE` updates before another distribution.
+
 ## Current API Slice
 
 The current local migration slice covers mobile server boundaries now owned by the MyChampions server:
@@ -311,15 +353,45 @@ email; a returning Apple token may omit email only when its provider subject is
 already stored. Account deletion removes the identity record with the account's
 other direct data.
 
-`POST /auth/email/sign-in` and `POST /auth/email/create-account` are the server-owned email/password auth boundary used by the mobile email auth source. They normalize email, verify or create Argon2id credentials in local Postgres, upsert the returned identity into `user_profiles`, then return the same JOSE bearer/refresh-token/cookie session shape as the local dev-session route. Local credentials return `emailVerified:false` because email verification is deferred and not required for MVP flows.
+`POST /auth/email/sign-in` and `POST /auth/email/create-account` are the server-owned email/password auth boundary used by the mobile email auth source. `sign-in` verifies Argon2id credentials in local Postgres, upserts the returned identity into `user_profiles`, then returns the same JOSE bearer/refresh-token/cookie session shape as the local dev-session route. Local credentials return `emailVerified:false` because email verification is deferred and not required for MVP flows.
+
+`create-account` normalizes the email and, if it is not already registered, creates the Argon2id credential row — but it does **not** issue a session. Instead it always responds `HTTP 202 { "status": "accepted" }`, whether the email was new or already had an account, and never sets an auth cookie. This is intentional (ET-75): a distinguishable response (previously `201` + session for a new email vs. `409 duplicate_email` for an existing one) let a caller enumerate which emails already have MyChampions accounts. The client submits the same email/password afterward to `/auth/email/sign-in` to establish the session — that call fails with `401 invalid_credentials` if the email already belonged to a different account with a different password, exactly as it would for any other wrong-password attempt.
 
 `POST /auth/social/sign-in` is the server-owned Google/Apple auth exchange boundary. Mobile continues native Google/Apple token capture and posts the captured token here before using deterministic local social sessions only for explicit provider-token configuration gaps in local development. The route accepts `provider`, provider `idToken`, and optional `accessToken`/`nonce`, verifies the token directly against the provider's JWKS, and requires the configured audience, issuer, subject, signature, and expiry. Google requires a verified email on every sign-in. Apple requires a verified email for first identity creation, while a returning signed Apple token without email is resolved only through its stored provider subject. Google audiences come from `GOOGLE_ANDROID_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`, and `GOOGLE_WEB_CLIENT_ID`; Apple audiences come from `APPLE_CLIENT_ID` and `APPLE_WEB_CLIENT_ID`. The route returns `configuration` with HTTP 503 until the requested provider audience is configured.
 
 `POST /auth/password-reset` accepts a normalized email address and records a provider-neutral local password-reset request in local Postgres table `password_reset_requests` through the server-owned password-reset service. The canonical request row stores only the SHA-256 token digest plus `expires_at`, and the HTTP response stays `{ "status": "accepted" }` without exposing provider, token, or delivery details. For local development, the server also writes a `password_reset_delivery_artifacts` debug-outbox row with the raw reset token and `mychampions://auth/password-reset?...` reset URL so the local flow can be inspected without remote email delivery. Direct transactional delivery stays disabled until its own transport credentials are configured.
 
-`POST /auth/password-reset/confirm` accepts `{ email, token, newPassword }` and completes a password reset. The server-owned password-reset service atomically verifies the submitted token's SHA-256 digest against the stored `password_reset_requests` row for that email, requires the row still be `pending` and unexpired, and marks it `consumed` in the same conditional update so a token can be redeemed at most once; an invalid, expired, or already-consumed token returns `400 invalid_or_expired_token` without touching any account. Before entering that transaction, the service hashes the new password with Argon2id; inside the same transaction it updates the matching `local_email_auth_credentials` row and revokes every existing `auth_sessions` row for that account so a stolen session cannot outlive the reset. A successful reset returns `{ "status": "reset" }`.
+`POST /auth/password-reset/confirm` accepts `{ email, token, newPassword }` and completes a password reset in one atomic step. The server-owned password-reset service first checks with a cheap read that the token is still redeemable, so an unknown, expired, or used token is rejected before any Argon2id work. It then hashes the new password with Argon2id and, inside one database transaction, conditionally marks the matching `password_reset_requests` row `consumed` (SHA-256 token digest for that email, still `pending`, unexpired), updates the matching `local_email_auth_credentials` row, and revokes every existing `auth_sessions` row for that account. If any step fails the whole transaction rolls back, so a token is consumed only when the password update succeeds and can be redeemed at most once; concurrent confirmations of the same token commit exactly one password update. After the commit the route also revokes all refresh sessions for that account through the refresh-session service, so a stolen session cannot outlive the reset with any completion implementation. An invalid, expired, or already-consumed token returns `400 invalid_or_expired_token` without touching any account. A valid token for an email with no local email/password account returns that same `400 invalid_or_expired_token` response (and the token stays pending), so the route never reveals whether an email is registered. A successful reset returns `{ "status": "reset" }`. The in-memory service used without Postgres follows the same contract: it claims the token before the password update and releases it if the update fails, so an unconfigured email auth provider returns `503 configuration` and leaves the token pending.
+
+The credential-adjacent routes — `POST /auth/dev/session`, `POST /auth/email/sign-in`, `POST /auth/social/sign-in`, `POST /auth/password-reset`, and `POST /auth/password-reset/confirm` — share one `elysia-rate-limit` per-IP budget (`AUTH_RATE_LIMIT_MAX` requests per `AUTH_RATE_LIMIT_WINDOW_MS`, default 20 per 60s) so brute-force/credential-stuffing sign-in attempts and password-reset/email-bombing floods are throttled with a `429` once the budget is exhausted (the same path with one trailing slash, which Elysia routes to the same handler, draws on the same budget), mirroring the `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX` pattern already used by `mychampionsapi-food`/`mychampionsapi-exercises`. Every other route (including `POST /auth/email/create-account`) is unaffected. The client key comes from the `X-Real-IP` header Nginx sets to `$remote_addr` on every proxied request (falling back to the Bun-reported socket address when the header is absent, e.g. local dev); trusting that header is safe only because the server binds to `127.0.0.1` and Nginx is the sole public ingress (see "VM Deployment Bootstrap").
 
 `POST /support/messages` stores write-only support requests in local Postgres table `support_messages`. The mobile client sends subject/body plus app metadata; the server derives authenticated user metadata from the bearer token and stores new messages with `status='pending'`.
+
+Every normal support submission includes an opaque `Idempotency-Key` header. The
+server serializes its PostgreSQL decision per authenticated user, checks a prior
+`(auth_uid, idempotency_key)` result before quota evaluation, and returns that
+original result for a replay. Older clients without the header remain accepted
+through the same quota path with a server-generated per-request key; they cannot
+deduplicate lost-response retries until upgraded. A malformed supplied key is rejected.
+It accepts at most three messages in a rolling
+fifteen-minute window and ten in a rolling twenty-four-hour window. A limit
+rejection inserts no support row and returns `429` with
+`error.code='support_rate_limited'` plus a whole-second `Retry-After` header.
+The wait covers all active quota windows and enough expirations to restore capacity,
+including pre-rollout traffic above the thresholds. Acceptance timestamps and window
+evaluation use the shared database clock after acquiring the per-user lock.
+Logs contain the outcome only (`accepted`, `replayed`, `limited`, or `failed`),
+never support content, account identifiers, or idempotency keys.
+
+Production ingress installs `infra/nginx/mychampions-server-rate-limits.conf`
+into Nginx's `http` context and applies its deliberately higher coarse per-IP
+guard only to `POST /support/messages`. Its method map leaves CORS `OPTIONS`
+preflights and other methods unmetered, and it keys POST requests from
+`$binary_remote_addr`, not forwarding headers supplied by the client. When the
+edge guard rejects a burst, its internal named location returns the same typed
+`support_rate_limited` JSON with `Retry-After: 2` and content-free browser CORS
+headers, so web clients can read the response. The server's authenticated
+PostgreSQL quota remains the authoritative enforcement.
 
 `POST /analytics/events` accepts unauthenticated provider-neutral mobile analytics events and stores them in local Postgres table `analytics_events`. The route is intentionally available before auth so auth-entry events can be captured, but it rejects any event properties containing sensitive keys such as email, tokens, passwords, invite codes, or secrets. The mobile analytics hook sends redacted best-effort events to this route when `EXPO_PUBLIC_MYCHAMPIONS_SERVER_URL` or Expo `extra.server.baseUrl` is configured.
 
@@ -352,9 +424,9 @@ independent privileges in the same iteration.
 
 `GET /professional/specialties` returns the authenticated professional's local Postgres `professional_specialties` rows joined with `professional_credentials`. `POST /professional/specialties` creates or reactivates the requested specialty for the authenticated professional. `GET /professional/specialties/:specialty/blockers` counts active and pending local Postgres `connections` for the authenticated professional and Specialty. `DELETE /professional/specialties/:specialtyId` deactivates an owned removable Specialty and revokes its active invite code; it rejects the last active Specialty and active/pending blockers. `PUT /professional/specialties/:specialtyId/credential` upserts the owned Specialty's `professional_registry` credential. The mobile `professional-source` requires these endpoints plus local server bearer auth outside explicit E2E fixtures; missing local server URL/auth fails closed.
 
-`POST /connections/:connectionId/confirm` activates an owned pending connection for the authenticated professional, releases its local pending invite guard/student-slot state, writes active `tracking_access` and `active_specialties` rows, and archives active self-managed nutrition or training plans for that connection's specialty. `POST /connections/:connectionId/end` marks a connection ended for either authenticated participant, releases any local pending invite guard/student-slot state, writes ended `tracking_access`, updates `active_specialties` only when the ending connection owns the sentinel, archives active assigned plans from that professional for the matching specialty, and restores the latest self-managed plan previously archived by that connection. Invite-code rotation also ends pending requests created from the old code and releases their local pending invite state.
+`POST /connections/:connectionId/confirm` activates an owned pending connection for the authenticated professional, releases its local pending invite guard/student-slot state, writes active `tracking_access` and `active_specialties` rows, and archives active self-managed nutrition or training plans for that connection's specialty. The activating `UPDATE` is conditioned on `status = 'pending_confirmation'` and its affected-row count is the sole win/lose signal, so concurrent confirms of the same connection (double-tap, client retry-on-timeout) are serialized atomically at the database: exactly one request performs the transition and runs the side effects above, and every other concurrent request observes the post-transition state and receives `409` (`invalid_transition` or `already_connected`). `POST /connections/:connectionId/end` marks a connection ended for either authenticated participant, releases any local pending invite guard/student-slot state, writes ended `tracking_access`, updates `active_specialties` only when the ending connection owns the sentinel, archives active assigned plans from that professional for the matching specialty, and restores the latest self-managed plan previously archived by that connection. Invite-code rotation also ends pending requests created from the old code and releases their local pending invite state.
 
-`GET /professional/students` groups the authenticated professional's active and pending local Postgres `connections` rows by student, enriches display names from `user_profiles`, and returns assignment status summaries for roster cards. `GET /professional/students/:studentUid/assignment-snapshot` returns the selected student's nutrition/training assignment status and active connection IDs for the professional profile view. The mobile `professional-source` requires these endpoints plus local server bearer auth outside explicit E2E fixtures; missing local server URL/auth fails closed.
+`GET /professional/students` groups the authenticated professional's active and pending local Postgres `connections` rows by student, enriches display names from `user_profiles`, and returns assignment status summaries for roster cards. `GET /professional/students/:studentUid/assignment-snapshot` returns the selected student's nutrition/training assignment status and active connection IDs for the professional profile view; it requires the authenticated professional to have at least one connection record (active, pending, or ended) with the requested student and returns `403 assignment_snapshot_forbidden` otherwise. The mobile `professional-source` requires these endpoints plus local server bearer auth outside explicit E2E fixtures; missing local server URL/auth fails closed.
 
 `POST /training/workout-logs` creates a student-owned workout completion log in local Postgres table `workout_logs`. `GET /training/workout-logs?from=<iso>` returns the authenticated student's workout logs since the requested timestamp. The mobile `workout-log-source` requires these endpoints plus local server bearer auth outside the assigned-training E2E fixture; missing local server URL/auth fails closed.
 
@@ -362,13 +434,13 @@ independent privileges in the same iteration.
 
 `GET /professional/students/:studentUid/tracking-review?todayKey=<yyyy-mm-dd>` returns `waterGoalMl` alongside the connected student's seven-day water logs and recent portion logs for read-only professional review. The route requires an active nutritionist connection owned by the authenticated professional before it reads tracking repositories, then the server resolves the effective hydration goal from local water-goal context instead of trusting a mobile-supplied goal value. The mobile `student-tracking-review-source` requires this endpoint plus local server bearer auth outside explicit E2E fixtures; missing local server URL/auth fails closed.
 
-`GET /nutrition/custom-meals`, `GET /nutrition/custom-meals/:mealId`, `POST /nutrition/custom-meals`, `PUT /nutrition/custom-meals/:mealId`, and `DELETE /nutrition/custom-meals/:mealId` manage authenticated-owner custom meal definitions in local Postgres table `custom_meals`. `POST /nutrition/custom-meals/:mealId/share-links` stores immutable nutrition snapshots in `meal_share_links`, `GET /nutrition/custom-meal-shares/:shareToken` previews a shared meal without bearer auth, and `POST /nutrition/custom-meal-shares/:shareToken/import` creates or reuses one recipient-owned imported copy. `POST /nutrition/custom-meal-images/:mealId` stores authenticated-owner JPEG meal images in local filesystem storage under `.local-storage/meal-images` by default; when `GCS_BUCKET` is configured, the same route writes to private GCS objects and returns the server media URL. `GET /media/custom-meal-images/:ownerAuthUid/:mealId/:filename` serves images back through the configured storage adapter. The mobile `custom-meal-source` requires the meal definition/share endpoints for library reads, create/update/delete, share link creation, shared recipe preview/import, and quick-log meal snapshot reads outside E2E fixtures; missing local server URL/auth fails closed. The mobile image upload hook requires this local server upload path and fails closed when local server URL/auth is unavailable.
+`GET /nutrition/custom-meals`, `GET /nutrition/custom-meals/:mealId`, `POST /nutrition/custom-meals`, `PUT /nutrition/custom-meals/:mealId`, and `DELETE /nutrition/custom-meals/:mealId` manage authenticated-owner custom meal definitions in local Postgres table `custom_meals`. `POST /nutrition/custom-meals/:mealId/share-links` stores immutable nutrition snapshots in `meal_share_links`, `GET /nutrition/custom-meal-shares/:shareToken` previews a shared meal without bearer auth, and `POST /nutrition/custom-meal-shares/:shareToken/import` creates or reuses one recipient-owned imported copy. `POST /nutrition/custom-meal-images/:mealId` stores authenticated-owner JPEG meal images in local filesystem storage under `.local-storage/meal-images` by default; when `GCS_BUCKET` is configured, the same route writes to private GCS objects and returns the server media URL. `GET /media/custom-meal-images/:ownerAuthUid/:mealId/:filename` requires a bearer token whose `auth.sub` matches the `:ownerAuthUid` path segment (401 with no/invalid token, 403 for a token belonging to a different owner) before serving the image back through the configured storage adapter. The mobile `custom-meal-source` requires the meal definition/share endpoints for library reads, create/update/delete, share link creation, shared recipe preview/import, and quick-log meal snapshot reads outside E2E fixtures; missing local server URL/auth fails closed. The mobile image upload hook requires this local server upload path and fails closed when local server URL/auth is unavailable.
 
-`POST /integrations/food/search` searches the local mirrored food catalog Postgres database through `FOOD_CATALOG_DATABASE_URL`. The route requires a MyChampions server bearer token and returns the same food macro result shape consumed by the existing mobile food-search source. The mobile `food-search-source` now requires the MyChampions server URL plus local bearer token and fails closed when that local auth path is unavailable.
+`POST /integrations/food/search` searches the local mirrored food catalog Postgres database through `FOOD_CATALOG_DATABASE_URL`. The route requires a MyChampions server bearer token and returns the same food macro result shape consumed by the existing mobile food-search source. The mobile `food-search-source` now requires the MyChampions server URL plus local bearer token and fails closed when that local auth path is unavailable. When the catalog query itself fails (missing table, connection error, etc.), the route responds `502 {"error":"upstream","message":"Food catalog search failed."}`; the raw driver error is logged server-side only, never returned to the client.
 
-`POST /integrations/exercise/search` and `GET /integrations/exercise/exercises/:exerciseId` search and read the local mirrored exercise catalog Postgres database through `EXERCISE_CATALOG_DATABASE_URL`. The routes require a MyChampions server bearer token and return the exercise catalog shape consumed by the existing mobile exercise source. The mobile `exercise-service-source` now requires the MyChampions server URL plus local bearer token and fails closed when that local auth path is unavailable.
+`POST /integrations/exercise/search` and `GET /integrations/exercise/exercises/:exerciseId` search and read the local mirrored exercise catalog Postgres database through `EXERCISE_CATALOG_DATABASE_URL`. The routes require a MyChampions server bearer token and return the exercise catalog shape consumed by the existing mobile exercise source. The mobile `exercise-service-source` now requires the MyChampions server URL plus local bearer token and fails closed when that local auth path is unavailable. When the catalog query itself fails (missing table, connection error, etc.), the routes respond `502 {"error":"upstream","message":"Exercise catalog search failed."}`; the raw driver error is logged server-side only, never returned to the client.
 
-`POST /plans/change-requests` stores authenticated student plan-change requests in local Postgres table `plan_change_requests`. `GET /professional/students/:studentUid/plan-change-requests` lists requests for the selected student, and `PATCH /plans/change-requests/:requestId/review` marks a request as `reviewed` or `dismissed`. The mobile `plan-source` requires these endpoints plus local server bearer auth outside E2E fixtures; missing local server URL/auth fails closed.
+`POST /plans/change-requests` stores authenticated student plan-change requests in local Postgres table `plan_change_requests`. `GET /professional/students/:studentUid/plan-change-requests` lists requests for the selected student and requires an active local Postgres `connections` row between the authenticated professional and that student, returning an empty list otherwise. `PATCH /plans/change-requests/:requestId/review` marks a request as `reviewed` or `dismissed` and requires the authenticated professional to own (`ownerProfessionalUid`) the request's underlying nutrition/training plan, returning `403 plan_change_request_forbidden` otherwise. The mobile `plan-source` requires these endpoints plus local server bearer auth outside E2E fixtures; missing local server URL/auth fails closed.
 
 `GET /plans/my` lists the authenticated user's visible local Postgres nutrition/training plans from `nutrition_plans` and `training_plans`, filtering archived rows and hiding assigned nutrition drafts from students until the professional publishes them. `GET /plans/predefined` lists predefined nutrition/training plans owned by the authenticated professional newest first. `GET /plans/starter-templates?planType=nutrition|training` returns the server-owned starter template catalog used by the mobile plan builder. `POST /plans/starter-templates/:templateId/clone` creates a professional-library nutrition or training plan from the server-owned template defaults, including starter meals/sessions and their items. `POST /plans/predefined/:planId/bulk-assign` clones a professional-owned predefined nutrition or training plan into assigned non-draft plans for students with an active matching-specialty connection. `POST /plans/predefined/:planId/draft-assignments` clones one professional-owned predefined nutrition or training plan into an assigned draft for a student with an active matching-specialty connection. The mobile `plan-source` requires these endpoints for `getMyPlans()`, `getMyPredefinedPlans()`, `bulkAssignPredefinedPlan()`, and `createDraftAssignedPlan()` outside E2E fixtures; missing local server URL/auth fails closed.
 
@@ -382,7 +454,7 @@ The mobile app posts email/password sign-in and create-account attempts to the M
 
 ## Test isolation
 
-Use pinned Bun 1.3.10 and the separate `test:unit` / `test:integration` commands described in [docs/testing.md](docs/testing.md). Integration owns disposable loopback Postgres and forbids the shared developer database, even under direct `bun test` invocation. The legacy broad `test`/parent `server:test` command reports DB entrypoint errors unless an owned runtime is supplied. This is intentional; it cannot silently truncate developer tables.
+Use pinned Bun 1.3.14 and the separate `test:unit` / `test:integration` commands described in [docs/testing.md](docs/testing.md). Integration owns disposable loopback Postgres and forbids the shared developer database, even under direct `bun test` invocation. The legacy broad `test`/parent `server:test` command reports DB entrypoint errors unless an owned runtime is supplied. This is intentional; it cannot silently truncate developer tables.
 
 Browser/native runner preparation reuses `scripts/testing/owned-runtime.ts`
 through the private stdio `scripts/testing/session.ts` bridge. It supplies

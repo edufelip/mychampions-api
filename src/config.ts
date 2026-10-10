@@ -21,6 +21,8 @@ export type ServerConfig = {
   revenueCatSecretApiKey: string | null;
   revenueCatWebhookAuthorization: string | null;
   revenueCatWebhookSigningSecret: string | null;
+  authRateLimitWindowMs: number;
+  authRateLimitMax: number;
 };
 
 function isExplicitLocalDevVariant(appVariant: string | undefined): boolean {
@@ -110,5 +112,12 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     revenueCatSecretApiKey: env.REVENUECAT_SECRET_API_KEY?.trim() || null,
     revenueCatWebhookAuthorization: env.REVENUECAT_WEBHOOK_AUTHORIZATION?.trim() || null,
     revenueCatWebhookSigningSecret: env.REVENUECAT_WEBHOOK_SIGNING_SECRET?.trim() || null,
+    authRateLimitWindowMs: readPositiveIntEnv(env.AUTH_RATE_LIMIT_WINDOW_MS, 60_000),
+    authRateLimitMax: readPositiveIntEnv(env.AUTH_RATE_LIMIT_MAX, 20),
   };
+}
+
+function readPositiveIntEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

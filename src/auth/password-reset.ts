@@ -1,5 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import {
+  EmailAuthGatewayError,
+  UnconfiguredEmailAuthGateway,
+  type EmailAuthGateway,
+} from './email-auth';
 import type { PasswordResetDeliveryGateway } from './password-reset-delivery';
 
 export const DEFAULT_PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
@@ -43,10 +48,27 @@ export type PasswordResetCompletionResult = PasswordResetConfirmResult & {
   authUid: string;
 };
 
+/**
+ * The only operation behind POST /auth/password-reset/confirm: a token is consumed if
+ * and only if the password update succeeds. Every implementation must leave the token
+ * pending when the update fails, and report a missing account as `account_not_found`
+ * (the route answers that exactly like an invalid token).
+ */
 export interface PasswordResetCompletionService {
   confirmAndUpdatePassword(
     input: PasswordResetCompletionInput
   ): Promise<PasswordResetCompletionResult>;
+}
+
+export function isPasswordResetCompletionService(
+  value: unknown
+): value is PasswordResetCompletionService {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Partial<PasswordResetCompletionService>).confirmAndUpdatePassword ===
+      'function'
+  );
 }
 
 export type PasswordResetConfirmErrorCode = 'invalid_or_expired_token' | 'account_not_found';
@@ -85,6 +107,11 @@ export type PasswordResetServiceOptions = {
   deliveryGateway?: PasswordResetDeliveryGateway;
 };
 
+export type InMemoryPasswordResetServiceOptions = PasswordResetServiceOptions & {
+  /** Stores the new password. Defaults to an unconfigured provider (503 at the route). */
+  passwordUpdater?: Pick<EmailAuthGateway, 'updatePassword'>;
+};
+
 export function createPasswordResetToken(): string {
   return randomBytes(32).toString('base64url');
 }
@@ -118,11 +145,16 @@ export function createPasswordResetDeliveryArtifact(input: {
   };
 }
 
-export class InMemoryPasswordResetService implements PasswordResetService {
+export class InMemoryPasswordResetService
+  implements PasswordResetService, PasswordResetCompletionService
+{
   private readonly requests: PasswordResetRequest[] = [];
   private readonly deliveryArtifacts: PasswordResetDeliveryArtifact[] = [];
+  private readonly passwordUpdater: Pick<EmailAuthGateway, 'updatePassword'>;
 
-  constructor(private readonly options: PasswordResetServiceOptions = {}) {}
+  constructor(private readonly options: InMemoryPasswordResetServiceOptions = {}) {
+    this.passwordUpdater = options.passwordUpdater ?? new UnconfiguredEmailAuthGateway();
+  }
 
   async request(input: PasswordResetRequestInput): Promise<PasswordResetRequestResult> {
     const requestedAt = this.options.now?.() ?? new Date();
@@ -162,7 +194,37 @@ export class InMemoryPasswordResetService implements PasswordResetService {
   }
 
   async confirm(input: PasswordResetConfirmInput): Promise<PasswordResetConfirmResult> {
-    const now = this.options.now?.() ?? new Date();
+    const request = this.claimPendingRequest(input, this.options.now?.() ?? new Date());
+    return { requestId: request.requestId };
+  }
+
+  async confirmAndUpdatePassword(
+    input: PasswordResetCompletionInput
+  ): Promise<PasswordResetCompletionResult> {
+    // Claim synchronously so a concurrent confirm cannot reuse the token while the
+    // password update is in flight, then release it if the update fails. This mirrors
+    // the Postgres transaction, which rolls the token back to pending on any failure.
+    const request = this.claimPendingRequest(input, this.options.now?.() ?? new Date());
+    try {
+      const { authUid } = await this.passwordUpdater.updatePassword({
+        email: input.emailNormalized,
+        newPassword: input.newPassword,
+      });
+      return { requestId: request.requestId, authUid };
+    } catch (error) {
+      request.status = 'pending';
+      request.consumedAt = null;
+      if (error instanceof EmailAuthGatewayError && error.code === 'account_not_found') {
+        throw new PasswordResetConfirmError(
+          'account_not_found',
+          'No local email/password account exists for this email.'
+        );
+      }
+      throw error;
+    }
+  }
+
+  private claimPendingRequest(input: PasswordResetConfirmInput, now: Date): PasswordResetRequest {
     const tokenDigest = digestPasswordResetToken(input.token);
     const request = this.requests.find(
       (candidate) =>
@@ -181,8 +243,7 @@ export class InMemoryPasswordResetService implements PasswordResetService {
 
     request.status = 'consumed';
     request.consumedAt = now.toISOString();
-
-    return { requestId: request.requestId };
+    return request;
   }
 
   listRequests(): PasswordResetRequest[] {

@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.10
+FROM oven/bun:1.3.14
 
 WORKDIR /app
 
@@ -8,7 +8,8 @@ RUN bun install --frozen-lockfile
 COPY drizzle.config.ts ./
 COPY drizzle ./drizzle
 COPY src ./src
+COPY infra/railway/start.sh ./infra/railway/start.sh
 
 EXPOSE 3400
 
-CMD ["bun", "run", "start"]
+CMD ["sh", "/app/infra/railway/start.sh"]

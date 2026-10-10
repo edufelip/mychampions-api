@@ -1,8 +1,9 @@
 import { bearer } from '@elysiajs/bearer';
 import { cors } from '@elysiajs/cors';
 import { jwt } from '@elysiajs/jwt';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Elysia, t } from 'elysia';
+import { rateLimit } from 'elysia-rate-limit';
 
 import { readConfig, type ServerConfig } from './config';
 import { createDatabase } from './db/client';
@@ -46,6 +47,8 @@ import { PostgresRefreshSessionRepository } from './auth/postgres-refresh-sessio
 import {
   InMemoryPasswordResetService,
   PasswordResetConfirmError,
+  isPasswordResetCompletionService,
+  type PasswordResetCompletionResult,
   type PasswordResetCompletionService,
   type PasswordResetService,
 } from './auth/password-reset';
@@ -119,6 +122,7 @@ import {
   type ExerciseSearchGateway,
 } from './integrations/exercise-search-gateway';
 import {
+  PlanChangeRequestForbiddenError,
   PlanChangeRequestNotFoundError,
   type PlanChangeRequest,
   type PlanChangeRequestRepository,
@@ -166,6 +170,49 @@ type CreateAppDeps = {
 const LOCAL_ACCESS_TOKEN_COOKIE = 'mychampions_access_token';
 const WEB_REFRESH_TOKEN_COOKIE = 'mychampions_refresh_token';
 const MAX_MEAL_PHOTO_ANALYSIS_IMAGE_BASE64_LENGTH = 6_000_000;
+const SUPPORT_IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._-]{16,200}$/;
+
+function recordSupportSubmission(outcome: 'accepted' | 'limited' | 'replayed' | 'failed') {
+  // Intentionally excludes message content and account identity. Aggregators can
+  // count outcomes without turning support messages into telemetry payloads.
+  console.info(JSON.stringify({ event: 'support_submission', outcome }));
+}
+
+// Credential-adjacent routes that accept unauthenticated requests: brute-force,
+// credential-stuffing, and email-bombing surfaces that need a per-IP throttle.
+// Every other route either requires a bearer token already or isn't
+// credential-adjacent, so it stays outside this narrower limiter.
+// Double-quoted (unlike the single-quoted route literals below) so this list
+// doesn't shadow the stack-contract test's single-quoted route-boundary scan.
+const AUTH_RATE_LIMITED_PATHS = new Set([
+  "/auth/dev/session",
+  "/auth/email/sign-in",
+  "/auth/social/sign-in",
+  "/auth/password-reset",
+  "/auth/password-reset/confirm",
+]);
+
+// Elysia also routes a path with one trailing slash ("/auth/email/sign-in/") to the
+// same handler, so the limiter must match that form too or it is a free bypass.
+function isAuthRateLimitedPath(pathname: string): boolean {
+  return AUTH_RATE_LIMITED_PATHS.has(pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname);
+}
+
+// The server only accepts traffic on 127.0.0.1 behind Nginx (see README "VM
+// Deployment Bootstrap"), so the reverse proxy is the only thing that can set
+// these headers in production; trusting them here does not open a spoofing
+// path. Nginx sets X-Real-IP to $remote_addr on every proxied request.
+function authRateLimitClientKey(
+  request: Request,
+  server: { requestIP: (request: Request) => { address: string } | null } | null
+): string {
+  const forwardedFor = request.headers.get('x-real-ip') ?? request.headers.get('x-forwarded-for');
+  const forwardedIp = forwardedFor?.split(',')[0]?.trim();
+  if (forwardedIp) {
+    return forwardedIp;
+  }
+  return server?.requestIP(request)?.address ?? 'unknown';
+}
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -268,6 +315,12 @@ function parseRevenueCatSignatureHeader(header: string): { timestamp: number; si
 function timingSafeHexEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left, 'hex');
   const rightBuffer = Buffer.from(right, 'hex');
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'utf8');
+  const rightBuffer = Buffer.from(right, 'utf8');
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
@@ -498,18 +551,23 @@ function passwordResetDeliveryGatewayErrorResponse(
 }
 
 function passwordResetConfirmErrorResponse(error: unknown, set: { status?: number | string }) {
-  if (!(error instanceof PasswordResetConfirmError)) {
-    throw error;
+  // A missing account is answered exactly like a bad token (and the token stays
+  // pending), so the confirm route never reveals whether an email is registered.
+  if (
+    error instanceof PasswordResetConfirmError ||
+    (error instanceof EmailAuthGatewayError && error.code === 'account_not_found')
+  ) {
+    set.status = 400;
+    return {
+      error: {
+        code: 'invalid_or_expired_token',
+        message: 'Password reset token is invalid or expired.',
+      },
+    };
   }
 
-  set.status = error.code === 'account_not_found' ? 404 : 400;
-
-  return {
-    error: {
-      code: error.code,
-      message: error.message,
-    },
-  };
+  // Provider failures (e.g. an unconfigured provider -> 503) keep their own shape.
+  return emailAuthGatewayErrorResponse(error, set);
 }
 
 function inviteCodeResponse(inviteCode: InviteCode) {
@@ -964,6 +1022,12 @@ function foodSearchGatewayErrorResponse(error: unknown, set: { status?: number |
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  if (error.code === 'upstream') {
+    console.error('[food-search] upstream gateway error:', error.message);
+    return { error: error.code, message: 'Food catalog search failed.' };
+  }
+
   return {
     error: error.code,
     message: error.message,
@@ -976,6 +1040,12 @@ function exerciseSearchGatewayErrorResponse(error: unknown, set: { status?: numb
   }
 
   set.status = error.code === 'configuration' ? 503 : 502;
+
+  if (error.code === 'upstream') {
+    console.error('[exercise-search] upstream gateway error:', error.message);
+    return { error: error.code, message: 'Exercise catalog search failed.' };
+  }
+
   return {
     error: error.code,
     message: error.message,
@@ -1228,12 +1298,13 @@ export function createApp(deps: CreateAppDeps = {}) {
         })
       : new InMemoryPasswordResetService({
           deliveryGateway: passwordResetDeliveryGateway,
+          passwordUpdater: emailAuthGateway,
         }));
+  // The confirm route only uses the atomic consume-and-update operation. A reset
+  // service that cannot do that needs an explicit completion service.
   const passwordResetCompletionService =
     deps.passwordResetCompletionService ??
-    (passwordResetService instanceof PostgresPasswordResetService
-      ? passwordResetService
-      : undefined);
+    (isPasswordResetCompletionService(passwordResetService) ? passwordResetService : undefined);
   const analyticsEventRepository =
     deps.analyticsEventRepository ??
     (database
@@ -1399,14 +1470,22 @@ export function createApp(deps: CreateAppDeps = {}) {
           return origin !== null && config.allowedWebOrigins.includes(origin);
         },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-        exposeHeaders: ['X-Request-ID'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-ID'],
+        exposeHeaders: ['Retry-After', 'X-Request-ID'],
         credentials: true,
         maxAge: 600,
       })
     )
     .use(bearer())
     .use(jwt({ name: 'jwt', secret: config.jwtPluginSecret }))
+    .use(
+      rateLimit({
+        duration: config.authRateLimitWindowMs,
+        max: config.authRateLimitMax,
+        generator: authRateLimitClientKey,
+        skip: (request) => !isAuthRateLimitedPath(new URL(request.url).pathname),
+      })
+    )
     .get('/health', () => ({
       status: 'ok',
       service: 'mychampions-server',
@@ -1609,7 +1688,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .post(
       '/auth/email/create-account',
-      async ({ body, cookie, request, set }) => {
+      async ({ body, set }) => {
         const emailNormalized = normalizeEmail(body.email);
         const displayName = body.displayName.trim();
         if (!isEmailLike(emailNormalized)) {
@@ -1622,22 +1701,30 @@ export function createApp(deps: CreateAppDeps = {}) {
         }
 
         try {
-          const identity = await emailAuthGateway.createAccount({
+          await emailAuthGateway.createAccount({
             email: emailNormalized,
             password: body.password,
             displayName,
           });
-          return await issueProviderAuthSession(
-            identity,
-            'email_password',
-            cookie,
-            set,
-            resolveSessionModeForRequest(body.sessionMode, request, config.allowedWebOrigins),
-            isAllowedCrossOriginRequest(request, config.allowedWebOrigins)
-          );
         } catch (error) {
+          if (error instanceof EmailAuthGatewayError && error.code === 'duplicate_email') {
+            // Do not distinguish "email already registered" from a genuine signup: an
+            // attacker could otherwise enumerate registered emails by watching for this
+            // status/body pair. Fall through to the same generic response issued below,
+            // and never issue a session here since the requester has not proven
+            // ownership of the existing account. See ET-75.
+            set.status = 202;
+            return { status: 'accepted' };
+          }
           return emailAuthGatewayErrorResponse(error, set);
         }
+
+        // A brand-new account was created, but no session is issued from this endpoint
+        // any more: the response must be identical to the duplicate-email branch above,
+        // so issuing tokens here would itself leak which case occurred. The client signs
+        // in separately with the credentials it just submitted.
+        set.status = 202;
+        return { status: 'accepted' };
       },
       {
         body: t.Object({
@@ -1718,8 +1805,10 @@ export function createApp(deps: CreateAppDeps = {}) {
           throw new Error('password_reset_completion_not_configured');
         }
 
+        // One atomic step: the token is consumed only if the password update succeeds.
+        let completion: PasswordResetCompletionResult;
         try {
-          await passwordResetCompletionService.confirmAndUpdatePassword({
+          completion = await passwordResetCompletionService.confirmAndUpdatePassword({
             emailNormalized,
             token: body.token,
             newPassword: body.newPassword,
@@ -1727,6 +1816,11 @@ export function createApp(deps: CreateAppDeps = {}) {
         } catch (error) {
           return passwordResetConfirmErrorResponse(error, set);
         }
+
+        // The Postgres completion already revokes these sessions inside its transaction;
+        // revoking here keeps the guarantee for every completion implementation and is
+        // idempotent (only sessions that are not yet revoked are touched).
+        await refreshSessionService.revokeAllForAuthUid(completion.authUid);
 
         set.status = 200;
         return { status: 'reset' };
@@ -1818,7 +1912,13 @@ export function createApp(deps: CreateAppDeps = {}) {
         };
       }
 
-      if (request.headers.get('authorization') !== config.revenueCatWebhookAuthorization) {
+      const providedAuthorization = request.headers.get('authorization');
+      const expectedAuthorization = config.revenueCatWebhookAuthorization;
+      if (
+        !providedAuthorization ||
+        !expectedAuthorization ||
+        !timingSafeStringEqual(providedAuthorization, expectedAuthorization)
+      ) {
         set.status = 401;
         return {
           error: {
@@ -2340,8 +2440,20 @@ export function createApp(deps: CreateAppDeps = {}) {
         const relevant = connections.filter(
           (connection) =>
             connection.professionalAuthUid === auth.sub &&
-            connection.studentAuthUid === params.studentUid
+            connection.studentAuthUid === params.studentUid &&
+            (connection.status === 'active' || connection.status === 'pending_confirmation')
         );
+
+        if (relevant.length === 0) {
+          set.status = 403;
+          return {
+            error: {
+              code: 'assignment_snapshot_forbidden',
+              message: 'A connection to this student is required to read their assignment snapshot.',
+            },
+          };
+        }
+
         const summary = summarizeStudentConnections(relevant);
         const profile = await profileRepository.findByAuthUid(params.studentUid);
 
@@ -3192,6 +3304,10 @@ export function createApp(deps: CreateAppDeps = {}) {
             set.status = 404;
             return { error: { code: 'plan_change_request_not_found', message: error.message } };
           }
+          if (error instanceof PlanChangeRequestForbiddenError) {
+            set.status = 403;
+            return { error: { code: 'plan_change_request_forbidden', message: error.message } };
+          }
           throw error;
         }
       },
@@ -3649,7 +3765,22 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .get(
       '/media/custom-meal-images/:ownerAuthUid/:mealId/:filename',
-      async ({ params, set }) => {
+      async ({ auth, params, set }) => {
+        if (!auth?.sub) {
+          set.status = 401;
+          return { error: { code: 'unauthorized', message: 'Missing or invalid bearer token.' } };
+        }
+
+        if (auth.sub !== params.ownerAuthUid) {
+          set.status = 403;
+          return {
+            error: {
+              code: 'custom_meal_image_forbidden',
+              message: 'You do not have access to this custom meal image.',
+            },
+          };
+        }
+
         try {
           const stored = await mealImageStorage.read(params);
           if (!stored) {
@@ -4085,7 +4216,7 @@ export function createApp(deps: CreateAppDeps = {}) {
     )
     .post(
       '/support/messages',
-      async ({ auth, body, set }) => {
+      async ({ auth, body, headers, set }) => {
         if (!auth?.sub) {
           set.status = 401;
           return { error: { code: 'unauthorized', message: 'Missing or invalid bearer token.' } };
@@ -4103,7 +4234,22 @@ export function createApp(deps: CreateAppDeps = {}) {
           };
         }
 
-        const message = await supportMessageRepository.create({
+        const suppliedIdempotencyKey = headers['idempotency-key'];
+        const idempotencyKey =
+          suppliedIdempotencyKey === undefined
+            ? `legacy-${randomUUID()}`
+            : suppliedIdempotencyKey.trim();
+        if (!SUPPORT_IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+          set.status = 400;
+          return {
+            error: {
+              code: 'invalid_idempotency_key',
+              message: 'A valid Idempotency-Key header is required.',
+            },
+          };
+        }
+
+        const input = {
           authUid: auth.sub,
           userEmail: auth.email,
           userName: auth.displayName,
@@ -4112,10 +4258,32 @@ export function createApp(deps: CreateAppDeps = {}) {
           body: messageBody,
           appVersion: body.appVersion.trim() || 'unknown',
           platform: body.platform,
-        });
+        };
 
-        set.status = 201;
-        return { id: message.id };
+        try {
+          if (!supportMessageRepository.submit) {
+            throw new Error('support_submission_policy_not_configured');
+          }
+          const submission = await supportMessageRepository.submit({ ...input, idempotencyKey });
+          if (submission.kind === 'limited') {
+            recordSupportSubmission('limited');
+            set.status = 429;
+            set.headers['retry-after'] = String(submission.retryAfterSeconds);
+            return {
+              error: {
+                code: 'support_rate_limited',
+                message: 'Support message rate limit reached. Try again later.',
+              },
+            };
+          }
+
+          recordSupportSubmission(submission.kind === 'replayed' ? 'replayed' : 'accepted');
+          set.status = submission.kind === 'created' ? 201 : 200;
+          return { id: submission.message.id };
+        } catch (error) {
+          recordSupportSubmission('failed');
+          throw error;
+        }
       },
       {
         body: t.Object({

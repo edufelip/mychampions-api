@@ -1,0 +1,92 @@
+name: Deploy API (Production)
+
+# Every push to main deploys the API to Railway (project mychampions-prod, service `api`). "Run workflow"
+# redeploys main by hand. The DigitalOcean VM deploy (infra/scripts/deploy-vm.sh) was retired on 2026-10-07 (ET-250).
+#
+# Database migrations run inside Railway as the service's pre-deploy command (`bun run db:migrate`) before the
+# new version starts; a failed migration stops the deployment and the previous one keeps serving. The
+# "Database migration result" step shows the outcome in this run.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: api-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_PROD_PROJECT_TOKEN }}
+      RAILWAY_CLI_VERSION: 5.63.3
+      RAILWAY_SERVICE: api
+      RAILWAY_ENVIRONMENT: production
+      HEALTH_URL: https://api.mychampions.eduwaldo.com/health
+    steps:
+      - name: Verify request
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "Production deploys run from main only" >&2
+            exit 1
+          fi
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_PROD_PROJECT_TOKEN secret must be configured" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Railway CLI
+        run: npm install --global "@railway/cli@${RAILWAY_CLI_VERSION}"
+
+      - name: Deploy to Railway
+        id: deploy
+        env:
+          RAILWAY_HTTP_TIMEOUT: "900"
+        run: railway up --ci --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT"
+
+      # The public URL keeps answering from the previous deployment while a new one fails its health check,
+      # so the run checks Railway's own status for the deployment it just created.
+      - name: Confirm new deployment
+        run: |
+          for attempt in $(seq 1 60); do
+            status="$(railway deployment list --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --json \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["status"])')"
+            case "$status" in
+              SUCCESS) echo "$RAILWAY_SERVICE: $status"; exit 0 ;;
+              FAILED|CRASHED|REMOVED) echo "::error::$RAILWAY_SERVICE deployment $status"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::$RAILWAY_SERVICE deployment still $status"
+          exit 1
+
+      - name: Database migration result
+        if: ${{ always() && steps.deploy.outcome != 'skipped' }}
+        run: |
+          deployment="$(railway deployment list --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --json \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')"
+          echo "Railway deployment: $deployment"
+          lines="$(railway logs --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT" -d -n 600 "$deployment" \
+            | grep -E 'migrations applied successfully|applying migrations|migration|DrizzleError|error' || true)"
+          printf '%s\n' "${lines:-No migration output found in the deployment log.}"
+          if ! printf '%s' "$lines" | grep -q 'migrations applied successfully'; then
+            echo "::error::No successful migration result found. Is the pre-deploy command 'bun run db:migrate' set on $RAILWAY_SERVICE?"
+            exit 1
+          fi
+
+      - name: Health check
+        run: |
+          body="$(curl -fsS --max-time 20 "$HEALTH_URL")"
+          echo "$body"
+          printf '%s' "$body" | grep -q '"status":"ok"'

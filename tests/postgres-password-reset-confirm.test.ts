@@ -89,10 +89,21 @@ describe('Postgres password-reset confirm flow', () => {
         body: JSON.stringify({ email, password: oldPassword, displayName: 'Reset User' }),
       })
     );
-    expect(createResponse.status).toBe(201);
-    const created = await createResponse.json();
-    const oldRefreshToken = created.refreshToken as string;
-    const authUid = created.profile.authUid as string;
+    expect(createResponse.status).toBe(202);
+
+    // Create-account no longer issues a session (ET-75); sign in to obtain the
+    // prior session this test later proves is revoked by the reset.
+    const initialSignIn = await app.handle(
+      new Request('http://server.test/auth/email/sign-in', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password: oldPassword }),
+      })
+    );
+    expect(initialSignIn.status).toBe(201);
+    const signedIn = await initialSignIn.json();
+    const oldRefreshToken = signedIn.refreshToken as string;
+    const authUid = signedIn.profile.authUid as string;
 
     await database.client`
       insert into auth_sessions
@@ -304,6 +315,55 @@ describe('Postgres password-reset confirm flow', () => {
     expect(resetRequest).toMatchObject({ status: 'pending', consumed_at: null });
   });
 
+  it('answers a valid token for an email without an account exactly like a bad token over HTTP', async () => {
+    const app = createApp();
+    const email = `missing-http-${randomUUID()}@local-password-reset.test`;
+
+    const requestResponse = await app.handle(
+      new Request('http://server.test/auth/password-reset', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+    );
+    expect(requestResponse.status).toBe(202);
+
+    const [artifact] = await database.client`
+      select reset_token
+      from password_reset_delivery_artifacts
+      where email_normalized = ${email}
+      order by created_at desc
+      limit 1
+    `;
+    expect(artifact).toBeDefined();
+
+    const confirmResponse = await app.handle(
+      new Request('http://server.test/auth/password-reset/confirm', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          token: artifact.reset_token as string,
+          newPassword: 'NewPassword1!',
+        }),
+      })
+    );
+    expect(confirmResponse.status).toBe(400);
+    await expect(confirmResponse.json()).resolves.toEqual({
+      error: {
+        code: 'invalid_or_expired_token',
+        message: 'Password reset token is invalid or expired.',
+      },
+    });
+
+    const [resetRequest] = await database.client`
+      select status, consumed_at
+      from password_reset_requests
+      where email_normalized = ${email}
+    `;
+    expect(resetRequest).toMatchObject({ status: 'pending', consumed_at: null });
+  });
+
   it('allows exactly one concurrent confirmation and commits one password update', async () => {
     const scenario = await seedResetScenario();
     const input = {
@@ -347,6 +407,80 @@ describe('Postgres password-reset confirm flow', () => {
     `;
     const ownedSessions = sessions.filter((session) => session.auth_uid === scenario.authUid);
     const foreignSessions = sessions.filter((session) => session.auth_uid === scenario.foreignAuthUid);
+    expect(ownedSessions.every((session) => session.revoked_at !== null)).toBe(true);
+    expect(foreignSessions.every((session) => session.revoked_at === null)).toBe(true);
+  });
+
+  it('accepts exactly one of two simultaneous HTTP confirms of the same token', async () => {
+    // Seeds the account and one active session; the scenario's own reset request is
+    // ignored because the route below runs on the real clock.
+    const scenario = await seedResetScenario();
+    const app = createApp();
+
+    const requestResponse = await app.handle(
+      new Request('http://server.test/auth/password-reset', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: scenario.email }),
+      })
+    );
+    expect(requestResponse.status).toBe(202);
+    const [artifact] = await database.client`
+      select request_id, reset_token
+      from password_reset_delivery_artifacts
+      where email_normalized = ${scenario.email}
+      order by created_at desc
+      limit 1
+    `;
+    expect(artifact).toBeDefined();
+
+    const confirm = (newPassword: string) =>
+      app.handle(
+        new Request('http://server.test/auth/password-reset/confirm', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: scenario.email,
+            token: artifact.reset_token as string,
+            newPassword,
+          }),
+        })
+      );
+    const responses = await Promise.all([confirm('FirstPassword1!'), confirm('SecondPassword1!')]);
+    const statuses = responses.map((response) => response.status).sort();
+    expect(statuses).toEqual([200, 400]);
+    const loser = responses.find((response) => response.status === 400)!;
+    await expect(loser.json()).resolves.toEqual({
+      error: {
+        code: 'invalid_or_expired_token',
+        message: 'Password reset token is invalid or expired.',
+      },
+    });
+
+    const [resetRequest] = await database.client`
+      select status
+      from password_reset_requests
+      where id = ${artifact.request_id as string}
+    `;
+    expect(resetRequest.status).toBe('consumed');
+
+    const [credential] = await database.client`
+      select password_hash
+      from local_email_auth_credentials
+      where auth_uid = ${scenario.authUid}
+    `;
+    const firstWon = await Bun.password.verify('FirstPassword1!', credential.password_hash);
+    const secondWon = await Bun.password.verify('SecondPassword1!', credential.password_hash);
+    expect([firstWon, secondWon].filter(Boolean)).toHaveLength(1);
+
+    const sessions = await database.client`
+      select auth_uid, revoked_at
+      from auth_sessions
+      where auth_uid in (${scenario.authUid}, ${scenario.foreignAuthUid})
+    `;
+    const ownedSessions = sessions.filter((session) => session.auth_uid === scenario.authUid);
+    const foreignSessions = sessions.filter((session) => session.auth_uid === scenario.foreignAuthUid);
+    expect(ownedSessions.length).toBeGreaterThan(0);
     expect(ownedSessions.every((session) => session.revoked_at !== null)).toBe(true);
     expect(foreignSessions.every((session) => session.revoked_at === null)).toBe(true);
   });

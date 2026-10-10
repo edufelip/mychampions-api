@@ -897,6 +897,46 @@ describe('subscription entitlement snapshot API', () => {
     expect(subscriptions.saved).toEqual([]);
   });
 
+  it('rejects a mismatched-length RevenueCat webhook authorization header without throwing', async () => {
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
+    delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
+    const subscriptions = makeSubscriptionRepository();
+    const app = createApp({
+      subscriptionEntitlementRepository: subscriptions.repository,
+    } as Parameters<typeof createApp>[0] & { subscriptionEntitlementRepository: unknown });
+
+    // node:crypto's timingSafeEqual throws a RangeError on mismatched-length
+    // buffers, so the constant-time comparison must length-check first
+    // (mirroring the existing timingSafeHexEqual helper used for the HMAC
+    // signature check right below this one). A header deliberately shorter
+    // than the configured secret exercises that guard: without it, the
+    // request crashes mid-handler and Elysia serializes the raw thrown
+    // RangeError as the response body instead of the route's normal JSON
+    // error envelope — still a 401 status, but not the well-formed
+    // `invalid_revenuecat_webhook_authorization` payload real clients rely
+    // on. Asserting on the parsed JSON body (not just the status code)
+    // catches that crash.
+    const response = await app.handle(
+      new Request('http://server.test/webhooks/revenuecat', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer short',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ event: { app_user_id: 'auth-1', type: 'TEST' } }),
+      })
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: 'invalid_revenuecat_webhook_authorization',
+        message: 'Invalid RevenueCat webhook authorization.',
+      },
+    });
+    expect(subscriptions.saved).toEqual([]);
+  });
+
   it('rejects missing, malformed, incorrect, and stale RevenueCat signatures', async () => {
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
     process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET = 'local-signing-secret';

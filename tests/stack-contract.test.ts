@@ -42,9 +42,9 @@ describe('local server stack contract', () => {
   });
 
   it('pins the requested Bun/Elysia/Drizzle runtime lines', () => {
-    expect(packageJson.packageManager).toBe('bun@1.3.10');
-    expect(packageJson.engines?.bun).toBe('1.3.10');
-    expect(bunVersionFile).toBe('1.3.10');
+    expect(packageJson.packageManager).toBe('bun@1.3.14');
+    expect(packageJson.engines?.bun).toBe('1.3.14');
+    expect(bunVersionFile).toBe('1.3.14');
     expect(packageJson.dependencies?.elysia).toBe('~1.4.0');
     expect(packageJson.dependencies?.['@elysiajs/bearer']).toBe('~1.4.0');
     expect(packageJson.dependencies?.['@elysiajs/jwt']).toBe('~1.4.0');
@@ -131,7 +131,8 @@ describe('local server stack contract', () => {
     expect(emailAuthStart).toBeGreaterThanOrEqual(0);
     expect(socialAuthStart).toBeGreaterThan(emailAuthStart);
     expect(passwordResetStart).toBeGreaterThanOrEqual(0);
-    expect(emailAuthSection).toContain('verify or create Argon2id credentials in local Postgres');
+    expect(emailAuthSection).toContain('verifies Argon2id credentials in local Postgres');
+    expect(emailAuthSection).toContain('creates the Argon2id credential row');
     expect(passwordResetSection).toContain('provider-neutral local password-reset request');
     expect(emailAuthSection).not.toContain('Firebase Auth');
     expect(passwordResetSection).not.toContain('Firebase Auth');

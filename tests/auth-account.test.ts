@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createApp } from '../src/app';
+import type { EmailAuthGateway } from '../src/auth/email-auth';
+import { EmailAuthGatewayError } from '../src/auth/email-auth';
 import { PasswordResetDeliveryGatewayError } from '../src/auth/password-reset-delivery';
 import {
+  InMemoryPasswordResetService,
   PasswordResetConfirmError,
   type PasswordResetCompletionService,
   type PasswordResetService,
 } from '../src/auth/password-reset';
+import {
+  InMemoryRefreshSessionRepository,
+  RefreshSessionService,
+} from '../src/auth/refresh-session-service';
+import { createTokenService } from '../src/auth/tokens';
 import type { ProfileRepository } from '../src/profile/repository';
 import type { SupportMessageRepository } from '../src/support/repository';
 
@@ -151,6 +159,59 @@ describe('auth account API', () => {
   });
 });
 
+function makeRefreshSessionServiceSpy() {
+  const service = new RefreshSessionService(
+    createTokenService({ issuer: 'mychampions-test', audience: 'mychampions-mobile' }),
+    new InMemoryRefreshSessionRepository()
+  );
+  const revokedAuthUids: string[] = [];
+  service.revokeAllForAuthUid = async (authUid: string) => {
+    revokedAuthUids.push(authUid);
+  };
+  return { service, revokedAuthUids };
+}
+
+function makePasswordUpdaterGateway(
+  updatePassword: EmailAuthGateway['updatePassword']
+): EmailAuthGateway {
+  return {
+    async signIn() {
+      throw new Error('signIn should not be called');
+    },
+    async createAccount() {
+      throw new Error('createAccount should not be called');
+    },
+    updatePassword,
+  };
+}
+
+async function makeInMemoryResetWithPendingToken(
+  updatePassword: EmailAuthGateway['updatePassword']
+) {
+  const passwordResetService = new InMemoryPasswordResetService({
+    requestIdFactory: () => 'reset_1',
+    tokenFactory: () => 'good-token',
+    passwordUpdater: makePasswordUpdaterGateway(updatePassword),
+  });
+  await passwordResetService.request({ emailNormalized: 'user@example.test' });
+  return passwordResetService;
+}
+
+function confirmRequest(body: { email: string; token: string; newPassword: string }) {
+  return new Request('http://server.test/auth/password-reset/confirm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+const invalidOrExpiredTokenResponse = {
+  error: {
+    code: 'invalid_or_expired_token',
+    message: 'Password reset token is invalid or expired.',
+  },
+};
+
 describe('POST /auth/password-reset/confirm', () => {
   it('rejects an invalid email before consulting the reset service', async () => {
     const passwordResetService: PasswordResetService = {
@@ -161,18 +222,20 @@ describe('POST /auth/password-reset/confirm', () => {
         throw new Error('confirm should not be called');
       },
     };
+    const passwordResetCompletionService: PasswordResetCompletionService = {
+      async confirmAndUpdatePassword() {
+        throw new Error('confirmAndUpdatePassword should not be called');
+      },
+    };
     const app = createApp({
       profileRepository: makeProfileRepository(),
       supportMessageRepository,
       passwordResetService,
+      passwordResetCompletionService,
     });
 
     const response = await app.handle(
-      new Request('http://server.test/auth/password-reset/confirm', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'not-an-email', token: 'token', newPassword: 'NewPassword1!' }),
-      })
+      confirmRequest({ email: 'not-an-email', token: 'token', newPassword: 'NewPassword1!' })
     );
 
     expect(response.status).toBe(400);
@@ -182,42 +245,61 @@ describe('POST /auth/password-reset/confirm', () => {
   });
 
   it('rejects an invalid or expired token without touching the account password', async () => {
-    const passwordResetCompletionService: PasswordResetCompletionService = {
-      async confirmAndUpdatePassword() {
-        throw new PasswordResetConfirmError(
-          'invalid_or_expired_token',
-          'Password reset token is invalid or expired.'
-        );
-      },
-    };
+    const updatePasswordCalls: unknown[] = [];
+    const passwordResetService = await makeInMemoryResetWithPendingToken(async (input) => {
+      updatePasswordCalls.push(input);
+      return { authUid: 'local_email_user_1' };
+    });
+    const { service: refreshSessionService, revokedAuthUids } = makeRefreshSessionServiceSpy();
     const app = createApp({
       profileRepository: makeProfileRepository(),
       supportMessageRepository,
-      passwordResetCompletionService,
+      passwordResetService,
+      refreshSessionService,
     });
 
     const response = await app.handle(
-      new Request('http://server.test/auth/password-reset/confirm', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          email: 'user@example.test',
-          token: 'bad-token',
-          newPassword: 'NewPassword1!',
-        }),
-      })
+      confirmRequest({ email: 'user@example.test', token: 'bad-token', newPassword: 'NewPassword1!' })
     );
 
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: 'invalid_or_expired_token',
-        message: 'Password reset token is invalid or expired.',
-      },
+    await expect(response.json()).resolves.toEqual(invalidOrExpiredTokenResponse);
+    expect(updatePasswordCalls).toEqual([]);
+    expect(revokedAuthUids).toEqual([]);
+    expect(passwordResetService.listRequests()[0]).toMatchObject({ status: 'pending' });
+  });
+
+  it('answers a missing account exactly like a bad token and keeps the token pending', async () => {
+    const passwordResetService = await makeInMemoryResetWithPendingToken(async () => {
+      throw new EmailAuthGatewayError(
+        'account_not_found',
+        'No local email/password account exists for this email.'
+      );
+    });
+    const { service: refreshSessionService, revokedAuthUids } = makeRefreshSessionServiceSpy();
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      supportMessageRepository,
+      passwordResetService,
+      refreshSessionService,
+    });
+
+    const response = await app.handle(
+      confirmRequest({ email: 'user@example.test', token: 'good-token', newPassword: 'NewPassword1!' })
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual(invalidOrExpiredTokenResponse);
+    expect(JSON.stringify(body)).not.toContain('account');
+    expect(revokedAuthUids).toEqual([]);
+    expect(passwordResetService.listRequests()[0]).toMatchObject({
+      status: 'pending',
+      consumedAt: null,
     });
   });
 
-  it('maps an account-not-found failure from the atomic completion service', async () => {
+  it('maps an account-not-found failure from an injected completion service to the generic response', async () => {
     const passwordResetCompletionService: PasswordResetCompletionService = {
       async confirmAndUpdatePassword() {
         throw new PasswordResetConfirmError(
@@ -233,27 +315,85 @@ describe('POST /auth/password-reset/confirm', () => {
     });
 
     const response = await app.handle(
-      new Request('http://server.test/auth/password-reset/confirm', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          email: ' USER@Example.test ',
-          token: 'good-token',
-          newPassword: 'NewPassword1!',
-        }),
-      })
+      confirmRequest({ email: 'user@example.test', token: 'good-token', newPassword: 'NewPassword1!' })
     );
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual(invalidOrExpiredTokenResponse);
+  });
+
+  it('surfaces an unconfigured email auth provider without consuming the token', async () => {
+    const passwordResetService = await makeInMemoryResetWithPendingToken(async () => {
+      throw new EmailAuthGatewayError(
+        'configuration',
+        'Email auth provider is not configured for this local server.'
+      );
+    });
+    const { service: refreshSessionService, revokedAuthUids } = makeRefreshSessionServiceSpy();
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      supportMessageRepository,
+      passwordResetService,
+      refreshSessionService,
+    });
+
+    const response = await app.handle(
+      confirmRequest({ email: ' USER@Example.test ', token: 'good-token', newPassword: 'NewPassword1!' })
+    );
+
+    expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({
       error: {
-        code: 'account_not_found',
-        message: 'No local email/password account exists for this email.',
+        code: 'configuration',
+        message: 'Email auth provider is not configured for this local server.',
       },
+    });
+    expect(revokedAuthUids).toEqual([]);
+    expect(passwordResetService.listRequests()[0]).toMatchObject({
+      status: 'pending',
+      consumedAt: null,
     });
   });
 
-  it('delegates password update and session revocation to one atomic completion operation', async () => {
+  it('updates the password, consumes the token once, and revokes every existing session', async () => {
+    const updatePasswordCalls: unknown[] = [];
+    const passwordResetService = await makeInMemoryResetWithPendingToken(async (input) => {
+      updatePasswordCalls.push(input);
+      return { authUid: 'local_email_user_1' };
+    });
+    const { service: refreshSessionService, revokedAuthUids } = makeRefreshSessionServiceSpy();
+    const app = createApp({
+      profileRepository: makeProfileRepository(),
+      supportMessageRepository,
+      passwordResetService,
+      refreshSessionService,
+    });
+
+    const response = await app.handle(
+      confirmRequest({ email: ' USER@Example.test ', token: 'good-token', newPassword: 'NewPassword1!' })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: 'reset' });
+    expect(updatePasswordCalls).toEqual([
+      { email: 'user@example.test', newPassword: 'NewPassword1!' },
+    ]);
+    expect(revokedAuthUids).toEqual(['local_email_user_1']);
+    expect(passwordResetService.listRequests()[0]).toMatchObject({ status: 'consumed' });
+
+    const replay = await app.handle(
+      confirmRequest({
+        email: 'user@example.test',
+        token: 'good-token',
+        newPassword: 'AnotherPassword1!',
+      })
+    );
+    expect(replay.status).toBe(400);
+    await expect(replay.json()).resolves.toEqual(invalidOrExpiredTokenResponse);
+    expect(updatePasswordCalls).toHaveLength(1);
+  });
+
+  it('delegates to an injected atomic completion service and revokes the returned account sessions', async () => {
     const completionInputs: unknown[] = [];
     const passwordResetCompletionService: PasswordResetCompletionService = {
       async confirmAndUpdatePassword(input) {
@@ -261,22 +401,16 @@ describe('POST /auth/password-reset/confirm', () => {
         return { requestId: 'reset_1', authUid: 'local_email_user_1' };
       },
     };
+    const { service: refreshSessionService, revokedAuthUids } = makeRefreshSessionServiceSpy();
     const app = createApp({
       profileRepository: makeProfileRepository(),
       supportMessageRepository,
       passwordResetCompletionService,
+      refreshSessionService,
     });
 
     const response = await app.handle(
-      new Request('http://server.test/auth/password-reset/confirm', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          email: 'user@example.test',
-          token: 'good-token',
-          newPassword: 'NewPassword1!',
-        }),
-      })
+      confirmRequest({ email: 'user@example.test', token: 'good-token', newPassword: 'NewPassword1!' })
     );
 
     expect(response.status).toBe(200);
@@ -288,5 +422,6 @@ describe('POST /auth/password-reset/confirm', () => {
         newPassword: 'NewPassword1!',
       },
     ]);
+    expect(revokedAuthUids).toEqual(['local_email_user_1']);
   });
 });

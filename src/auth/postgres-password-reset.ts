@@ -27,9 +27,27 @@ import { hashLocalEmailPassword } from './email-auth';
 
 type Db = {
   insert: Function;
+  select: Function;
   update: Function;
   transaction: Function;
 };
+
+function invalidOrExpiredToken(): PasswordResetConfirmError {
+  return new PasswordResetConfirmError(
+    'invalid_or_expired_token',
+    'Password reset token is invalid or expired.'
+  );
+}
+
+/** The one definition of a redeemable token: this email, this digest, still pending, unexpired. */
+function redeemableRequest(emailNormalized: string, tokenDigest: string, now: Date) {
+  return and(
+    eq(passwordResetRequests.emailNormalized, emailNormalized),
+    eq(passwordResetRequests.tokenDigest, tokenDigest),
+    eq(passwordResetRequests.status, 'pending'),
+    gt(passwordResetRequests.expiresAt, now)
+  );
+}
 
 export type PostgresPasswordResetServiceHooks = {
   afterTokenConsumption?: () => void | Promise<void>;
@@ -101,21 +119,11 @@ export class PostgresPasswordResetService
     const [row] = await this.db
       .update(passwordResetRequests)
       .set({ status: 'consumed', consumedAt: now })
-      .where(
-        and(
-          eq(passwordResetRequests.emailNormalized, input.emailNormalized),
-          eq(passwordResetRequests.tokenDigest, tokenDigest),
-          eq(passwordResetRequests.status, 'pending'),
-          gt(passwordResetRequests.expiresAt, now)
-        )
-      )
+      .where(redeemableRequest(input.emailNormalized, tokenDigest, now))
       .returning({ id: passwordResetRequests.id });
 
     if (!row) {
-      throw new PasswordResetConfirmError(
-        'invalid_or_expired_token',
-        'Password reset token is invalid or expired.'
-      );
+      throw invalidOrExpiredToken();
     }
 
     return { requestId: row.id };
@@ -125,28 +133,33 @@ export class PostgresPasswordResetService
     input: PasswordResetCompletionInput
   ): Promise<PasswordResetCompletionResult> {
     const tokenDigest = digestPasswordResetToken(input.token);
-    const passwordHash = await hashLocalEmailPassword(input.newPassword);
     const now = this.options.now?.() ?? new Date();
+
+    // Argon2id is deliberately expensive (64 MiB, tens of ms), so a request with an
+    // unknown, expired or used token is turned away by this cheap read before any
+    // hashing. The read decides nothing: the conditional UPDATE inside the transaction
+    // below is still the only step that consumes a token.
+    const [redeemable] = await this.db
+      .select({ id: passwordResetRequests.id })
+      .from(passwordResetRequests)
+      .where(redeemableRequest(input.emailNormalized, tokenDigest, now))
+      .limit(1);
+    if (!redeemable) {
+      throw invalidOrExpiredToken();
+    }
+
+    // Hash outside the transaction so the row lock is held only for the three updates.
+    const passwordHash = await hashLocalEmailPassword(input.newPassword);
 
     return this.db.transaction(async (tx: Db) => {
       const [request] = await tx
         .update(passwordResetRequests)
         .set({ status: 'consumed', consumedAt: now })
-        .where(
-          and(
-            eq(passwordResetRequests.emailNormalized, input.emailNormalized),
-            eq(passwordResetRequests.tokenDigest, tokenDigest),
-            eq(passwordResetRequests.status, 'pending'),
-            gt(passwordResetRequests.expiresAt, now)
-          )
-        )
+        .where(redeemableRequest(input.emailNormalized, tokenDigest, now))
         .returning({ id: passwordResetRequests.id });
 
       if (!request) {
-        throw new PasswordResetConfirmError(
-          'invalid_or_expired_token',
-          'Password reset token is invalid or expired.'
-        );
+        throw invalidOrExpiredToken();
       }
 
       await this.hooks.afterTokenConsumption?.();

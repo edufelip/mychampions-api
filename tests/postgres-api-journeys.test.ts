@@ -60,16 +60,27 @@ async function request<T>(
 }
 async function createAccount(name: string, role: 'student' | 'professional') {
   const run = loadTestManifest().runId;
-  const response = await request<Session>(
+  const email = `${name}-${run}@example.test`;
+  const password = 'Owned-QA-Pass123!';
+  // Create-account never issues a session (ET-75): it answers 202 for both new and
+  // already-registered emails, so the journey signs in separately.
+  const created = await request<{ status: string }>(
     'POST',
     '/auth/email/create-account',
     {
-      email: `${name}-${run}@example.test`,
+      email,
       displayName: `QA ${name}`,
-      password: 'Owned-QA-Pass123!',
+      password,
       sessionMode: 'bearer',
     }
   );
+  expect(created.status).toBe(202);
+  expect(created.body).toEqual({ status: 'accepted' });
+  const response = await request<Session>('POST', '/auth/email/sign-in', {
+    email,
+    password,
+    sessionMode: 'bearer',
+  });
   expect(response.status).toBe(201);
   const session = response.body;
   expect((await request('PATCH', '/me/role', { role }, session)).status).toBe(

@@ -340,8 +340,17 @@ export class PostgresConnectionRepository implements ConnectionRepository {
         endedAt: null,
         updatedAt: now,
       })
-      .where(eq(connections.id, input.connectionId))
+      .where(and(eq(connections.id, input.connectionId), eq(connections.status, 'pending_confirmation')))
       .returning();
+
+    // The UPDATE above is the single source of truth for "did this request win
+    // the transition": its WHERE clause re-checks status atomically with the
+    // write, so a concurrent confirm that lost the race affects zero rows here
+    // even though it passed the earlier read-only status check. Only the
+    // winner reaches the side effects below.
+    if (!row) {
+      throw new InvalidConnectionTransitionError();
+    }
 
     await this.releasePendingInviteState(connection, now);
     await this.writeTrackingAccess(connection, 'active', now);

@@ -19,6 +19,16 @@ export type SupportMessage = CreateSupportMessageInput & {
   updatedAt: string;
 };
 
+export type SupportMessageSubmission =
+  | { kind: 'created'; message: SupportMessage }
+  | { kind: 'replayed'; message: SupportMessage }
+  | { kind: 'limited'; retryAfterSeconds: number };
+
+export type SubmitSupportMessageInput = CreateSupportMessageInput & {
+  idempotencyKey: string;
+};
+
 export interface SupportMessageRepository {
   create(input: CreateSupportMessageInput): Promise<SupportMessage>;
+  submit?(input: SubmitSupportMessageInput): Promise<SupportMessageSubmission>;
 }
