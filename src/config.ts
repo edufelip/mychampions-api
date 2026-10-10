@@ -23,6 +23,7 @@ export type ServerConfig = {
   revenueCatWebhookSigningSecret: string | null;
   authRateLimitWindowMs: number;
   authRateLimitMax: number;
+  trustedProxyHeader: string | null;
 };
 
 function isExplicitLocalDevVariant(appVariant: string | undefined): boolean {
@@ -114,7 +115,32 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     revenueCatWebhookSigningSecret: env.REVENUECAT_WEBHOOK_SIGNING_SECRET?.trim() || null,
     authRateLimitWindowMs: readPositiveIntEnv(env.AUTH_RATE_LIMIT_WINDOW_MS, 60_000),
     authRateLimitMax: readPositiveIntEnv(env.AUTH_RATE_LIMIT_MAX, 20),
+    trustedProxyHeader: readTrustedProxyHeader(env.TRUSTED_PROXY_HEADER, production),
   };
+}
+
+// The request header this deployment's own proxy overwrites with the client
+// address: x-real-ip on Railway and behind the Nginx VM. Unset or `none` trusts
+// no header, so the auth rate limiter keys on the socket address. Production
+// must choose explicitly: behind a proxy the socket address is the proxy's, so
+// forgetting this would put every client in one shared budget.
+function readTrustedProxyHeader(value: string | undefined, production: boolean): string | null {
+  const header = value?.trim().toLowerCase() ?? '';
+  if (header === 'none') {
+    return null;
+  }
+  if (header === '') {
+    if (production) {
+      throw new Error(
+        'TRUSTED_PROXY_HEADER must be set in production: x-real-ip on Railway or behind Nginx, or none.'
+      );
+    }
+    return null;
+  }
+  if (!/^[a-z0-9-]+$/.test(header)) {
+    throw new Error('TRUSTED_PROXY_HEADER must be a request header name or none.');
+  }
+  return header;
 }
 
 function readPositiveIntEnv(value: string | undefined, fallback: number): number {
