@@ -151,6 +151,43 @@ jobs:
           fi
           echo "No owned test containers or networks remain."
 
+  # Railway runs `bun run db:migrate` (the drizzle-kit CLI and drizzle.config.ts)
+  # before every deploy. The owned integration lane applies the same SQL through
+  # drizzle-orm's migrator, so this job keeps the CLI path itself covered on a
+  # fresh disposable service database, and checks a second run is a no-op.
+  migrate:
+    name: Migrations (drizzle-kit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mychampions_ci
+          POSTGRES_PASSWORD: mychampions_ci_password
+          POSTGRES_DB: mychampions_server_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mychampions_ci -d mychampions_server_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://mychampions_ci:mychampions_ci_password@localhost:5432/mychampions_server_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Apply migrations with the deploy command
+        run: bun run db:migrate
+      - name: Re-apply migrations (must be a no-op)
+        run: bun run db:migrate
+
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest
