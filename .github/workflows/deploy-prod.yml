@@ -77,8 +77,18 @@ jobs:
           deployment="$(railway deployment list --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --json \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')"
           echo "Railway deployment: $deployment"
-          lines="$(railway logs --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT" -d -n 600 "$deployment" \
-            | grep -E 'migrations applied successfully|applying migrations|migration|DrizzleError|error' || true)"
+          # Railway can make the last pre-deploy log lines readable a few seconds after the deployment reports
+          # SUCCESS, so read the log again (every 5 s, up to about a minute) before deciding.
+          for attempt in $(seq 1 12); do
+            lines="$(railway logs --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENVIRONMENT" -d -n 600 "$deployment" \
+              | grep -E 'migrations applied successfully|applying migrations|migration|DrizzleError|error' || true)"
+            if printf '%s' "$lines" | grep -q 'migrations applied successfully'; then
+              break
+            fi
+            if [ "$attempt" -lt 12 ]; then
+              sleep 5
+            fi
+          done
           printf '%s\n' "${lines:-No migration output found in the deployment log.}"
           if ! printf '%s' "$lines" | grep -q 'migrations applied successfully'; then
             echo "::error::No successful migration result found. Is the pre-deploy command 'bun run db:migrate' set on $RAILWAY_SERVICE?"
