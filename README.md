@@ -408,11 +408,33 @@ EXPECTED_AI_STATUS=lapsed \
 bun run evidence:revenuecat-live -- --verify
 ```
 
-The verifier defaults to a no-SSH dry run when `--verify` is omitted, refuses
-hosts other than `digiocean`, requires exactly one running server slot, and
-refreshes both canonical provider privileges and the server snapshot inside
-the bounded timeout loop. It succeeds only when both reads match the expected
-independent privileges in the same iteration.
+The verifier defaults to a dry run that contacts nothing when `--verify` is
+omitted. With `--verify` it needs a logged-in Railway CLI and an SSH key
+registered with Railway (`railway ssh keys list`). It opens `railway ssh` to the
+production `api` service, pinned by id to project `mychampions-prod` and
+environment `production` (names alone are ambiguous: `mychampions-dev` also has
+an `api` service in an environment named `production`). The CLI's stdin is
+`/dev/null`, so it never registers an SSH key on its own. This CLI behavior is
+taken from Railway CLI 5.63.3, the version the deploy workflow pins.
+
+Over that session it runs `infra/scripts/revenuecat-live-evidence.remote.ts`
+with `bun -e` inside the container. The program uses the container's own
+`DATABASE_URL` and `REVENUECAT_SECRET_API_KEY`, so no credential reaches the
+local machine or the command line. Before reading anything it checks the
+container's `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, and
+`RAILWAY_SERVICE_ID`, then the connected database name (`mychampions_server`).
+It reads through a Postgres session opened with
+`default_transaction_read_only=on`, and refuses to continue unless Postgres
+reports the session read-only.
+
+Inside the bounded timeout loop it re-reads the snapshot every iteration. It
+reads RevenueCat only once a snapshot row exists for the App User ID, because
+RevenueCat's v1 customer lookup creates a customer for an unknown ID, and
+production snapshots come only from the signed webhook. The verifier succeeds
+only when both reads match the expected independent privileges in the same
+iteration and the program prints its result marker. The Railway SSH relay can
+end a session with exit 0 without running the command, so exit 0 alone is not
+treated as a pass.
 
 `GET /connections` lists the authenticated user's student-side and professional-side connections from local Postgres table `connections`. The mobile client uses this endpoint for `getMyConnections()` when a local server bearer token is available.
 
