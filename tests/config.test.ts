@@ -30,6 +30,9 @@ describe('server configuration', () => {
     expect(readConfig({ TRUSTED_PROXY_HEADER: ' X-Real-IP ' }).trustedProxyHeader).toBe(
       'x-real-ip'
     );
+    expect(readConfig({ TRUSTED_PROXY_HEADER: 'x_client.ip' }).trustedProxyHeader).toBe(
+      'x_client.ip'
+    );
   });
 
   it('requires production to choose the trusted proxy header explicitly', () => {

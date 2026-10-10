@@ -192,7 +192,7 @@ const AUTH_RATE_LIMITED_PATHS = new Set([
 // this deployment's own proxy overwrites (TRUSTED_PROXY_HEADER: X-Real-IP on
 // Railway's edge and on the Nginx VM). Every other header is ignored. With no
 // trusted header the key is the socket address, which a client cannot forge.
-function authRateLimitClientKey(trustedProxyHeader: string | null) {
+export function authRateLimitClientKey(trustedProxyHeader: string | null) {
   return (
     request: Request,
     server: { requestIP: (request: Request) => { address: string } | null } | null

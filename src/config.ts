@@ -137,7 +137,7 @@ function readTrustedProxyHeader(value: string | undefined, production: boolean):
     }
     return null;
   }
-  if (!/^[a-z0-9-]+$/.test(header)) {
+  if (!/^[a-z0-9!#$%&'*+.^_`|~-]+$/.test(header)) {
     throw new Error('TRUSTED_PROXY_HEADER must be a request header name or none.');
   }
   return header;

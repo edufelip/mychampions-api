@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { createApp } from '../src/app';
+import { authRateLimitClientKey, createApp } from '../src/app';
 import { InMemoryPasswordResetService } from '../src/auth/password-reset';
 import { readConfig } from '../src/config';
 import type { ProfileRepository } from '../src/profile/repository';
@@ -221,5 +221,38 @@ describe('auth rate limiting', () => {
       statuses.push(response.status);
     }
     expect(statuses).toEqual([201, 201, 201, 429]);
+
+    // A different proxy-added address is a different client with its own budget.
+    const otherClient = await app.handle(
+      devSessionRequest('appended-other@example.test', {
+        'x-real-ip': '198.51.100.9, 203.0.113.11',
+      })
+    );
+    expect(otherClient.status).toBe(201);
+  });
+});
+
+describe('auth rate-limit client key', () => {
+  const serverWithAddress = (address: string) => ({ requestIP: () => ({ address }) });
+  const keyRequest = (headers: Record<string, string> = {}) =>
+    new Request('http://server.test/auth/email/sign-in', { headers });
+
+  it('keys on the socket address and ignores forwarding headers when none is trusted', () => {
+    const key = authRateLimitClientKey(null);
+    const spoofed = keyRequest({ 'x-real-ip': '198.51.100.1', 'x-forwarded-for': '198.51.100.2' });
+
+    expect(key(spoofed, serverWithAddress('192.0.2.10'))).toBe('192.0.2.10');
+    expect(key(spoofed, serverWithAddress('192.0.2.20'))).toBe('192.0.2.20');
+  });
+
+  it('uses the last trusted-header entry and otherwise the socket address', () => {
+    const key = authRateLimitClientKey('x-real-ip');
+    const socket = serverWithAddress('192.0.2.10');
+
+    expect(key(keyRequest({ 'x-real-ip': '198.51.100.1, 203.0.113.10' }), socket)).toBe(
+      '203.0.113.10'
+    );
+    expect(key(keyRequest({ 'x-forwarded-for': '198.51.100.1' }), socket)).toBe('192.0.2.10');
+    expect(key(keyRequest({ 'x-real-ip': '203.0.113.10, ' }), socket)).toBe('192.0.2.10');
   });
 });
