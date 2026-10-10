@@ -17,6 +17,10 @@ const FULL_SCOPE_PATTERNS: RegExp[] = [
   /^drizzle\//,
   /^\.github\/workflows\//,
   /^scripts\/ci\//,
+  // Contract tests read or run these files (readFile/Bun.spawn) instead of
+  // importing them, so `bun test --changed` can't trace them.
+  /^infra\//,
+  /^\.env\.example$/,
 ];
 
 const IGNORED_PATTERNS: RegExp[] = [
@@ -24,8 +28,6 @@ const IGNORED_PATTERNS: RegExp[] = [
   /^docs\//,
   /\.md$/,
   /^\.gitignore$/,
-  /^\.env\.example$/,
-  /^infra\//,
 ];
 
 const SOURCE_ROOT_PATTERNS: RegExp[] = [/^src\//, /^tests\//];
