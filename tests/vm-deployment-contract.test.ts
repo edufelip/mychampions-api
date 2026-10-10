@@ -1,9 +1,84 @@
-import { readFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'bun:test';
 
 const serverRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+const EVIDENCE_SCRIPT = 'infra/scripts/verify-revenuecat-live-evidence.sh';
+const EVIDENCE_PROGRAM = join(serverRoot, 'infra', 'scripts', 'revenuecat-live-evidence.remote.ts');
+const RAILWAY_PRODUCTION_API = {
+  projectId: 'f8ac2da4-916e-4017-93dc-167e8a5ad9f3',
+  environmentId: '9ccf6768-f3fd-453a-86d0-b85e42759619',
+  serviceId: '6a0249fa-e25e-4a13-906b-c64965b63a51',
+};
+const EVIDENCE_REQUEST = {
+  REVENUECAT_TEST_APP_USER_ID: 'rc-live-contract-test',
+  EXPECTED_PROFESSIONAL_STATUS: 'active',
+  EXPECTED_AI_STATUS: 'lapsed',
+};
+
+// Stands in for the Railway CLI: records its argv and stdin, then answers like the relay would.
+const FAKE_RAILWAY = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\0' "$@" > "$FAKE_RAILWAY_DIR/argv"
+if [ -t 0 ]; then printf tty > "$FAKE_RAILWAY_DIR/stdin"; else cat > "$FAKE_RAILWAY_DIR/stdin"; fi
+case "$FAKE_RAILWAY_MODE" in
+  converged)
+    printf '{"converged": true}\\nREVENUECAT_LIVE_EVIDENCE_CONVERGED\\n'
+    ;;
+  relay-without-command)
+    printf '{"status":"provisioning"}\\n'
+    ;;
+  remote-refusal)
+    echo 'Refusing live evidence verification: not the expected production api service.' >&2
+    exit 2
+    ;;
+esac
+`;
+
+async function runEvidenceVerifier(
+  options: { args?: string[]; env?: Record<string, string>; railwayMode?: string } = {}
+) {
+  const fakeDir = await mkdtemp(join(tmpdir(), 'fake-railway-'));
+  try {
+    await writeFile(join(fakeDir, 'railway'), FAKE_RAILWAY);
+    await chmod(join(fakeDir, 'railway'), 0o755);
+    const child = Bun.spawn(['bash', EVIDENCE_SCRIPT, ...(options.args ?? [])], {
+      cwd: serverRoot,
+      env: {
+        ...process.env,
+        ...EVIDENCE_REQUEST,
+        PATH: `${fakeDir}:${process.env.PATH ?? ''}`,
+        FAKE_RAILWAY_DIR: fakeDir,
+        FAKE_RAILWAY_MODE: options.railwayMode ?? 'converged',
+        ...options.env,
+      },
+      // Railway must never see this: the verifier gives the CLI /dev/null.
+      stdin: new Blob(['stdin-must-not-reach-railway']),
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    const argvFile = Bun.file(join(fakeDir, 'argv'));
+    const stdinFile = Bun.file(join(fakeDir, 'stdin'));
+
+    return {
+      exitCode,
+      stdout,
+      stderr,
+      railwayArgv: (await argvFile.exists()) ? (await argvFile.text()).split('\0').slice(0, -1) : null,
+      railwayStdin: (await stdinFile.exists()) ? await stdinFile.text() : null,
+    };
+  } finally {
+    await rm(fakeDir, { recursive: true, force: true });
+  }
+}
 
 async function runScript(
   path: string,
@@ -140,55 +215,141 @@ describe('VM deployment contract', () => {
     expect(result.stderr).toContain('Missing deployment prerequisite');
   });
 
-  it('keeps live RevenueCat evidence verification read-only and constrained to the production VM', async () => {
-    const evidenceScript = await readFile(
-      join(serverRoot, 'infra', 'scripts', 'verify-revenuecat-live-evidence.sh'),
-      'utf8'
-    );
-    const dryRun = await runScript('infra/scripts/verify-revenuecat-live-evidence.sh', {
-      env: {
-        REVENUECAT_TEST_APP_USER_ID: 'rc-live-contract-test',
-        EXPECTED_PROFESSIONAL_STATUS: 'active',
-        EXPECTED_AI_STATUS: 'lapsed',
-      },
-    });
-    const unsafeHost = await runScript('infra/scripts/verify-revenuecat-live-evidence.sh', {
-      args: ['--verify'],
-      env: {
-        MYCHAMPIONS_VM_SSH_HOST: 'unsafe-host',
-        REVENUECAT_TEST_APP_USER_ID: 'rc-live-contract-test',
-        EXPECTED_PROFESSIONAL_STATUS: 'active',
-        EXPECTED_AI_STATUS: 'lapsed',
-      },
+  describe('live RevenueCat evidence verifier on Railway', () => {
+    it('defaults to a dry run that names the pinned production target and never calls Railway', async () => {
+      const dryRun = await runEvidenceVerifier();
+
+      expect(dryRun.exitCode).toBe(0);
+      expect(dryRun.stdout).toContain(
+        'Dry run only. No Railway SSH, provider read, or database read was performed.'
+      );
+      expect(dryRun.stdout).toContain(RAILWAY_PRODUCTION_API.projectId);
+      expect(dryRun.stdout).toContain(RAILWAY_PRODUCTION_API.environmentId);
+      expect(dryRun.stdout).toContain(RAILWAY_PRODUCTION_API.serviceId);
+      expect(dryRun.stdout).toContain('database mychampions_server');
+      expect(dryRun.stdout).toContain('rc-live-contract-test');
+      expect(dryRun.railwayArgv).toBeNull();
     });
 
-    expect(dryRun.exitCode).toBe(0);
-    expect(dryRun.stdout).toContain('Dry run only. No SSH, provider read, or database read was performed.');
-    expect(dryRun.stdout).toContain('rc-live-contract-test');
-    expect(unsafeHost.exitCode).toBe(2);
-    expect(unsafeHost.stderr).toContain('MYCHAMPIONS_VM_SSH_HOST must be digiocean');
-    expect(evidenceScript).toContain('select');
-    expect(evidenceScript).toContain('subscription_entitlement_snapshots');
-    expect(evidenceScript).toContain('RevenueCatRestCustomerManager');
-    expect(evidenceScript).not.toMatch(/\b(insert|update|delete|truncate|drop)\b/i);
+    it('rejects unsafe requests before calling Railway', async () => {
+      const unsafeUid = await runEvidenceVerifier({
+        args: ['--verify'],
+        env: { REVENUECAT_TEST_APP_USER_ID: 'rc-live;printenv' },
+      });
+      const unknownArgument = await runEvidenceVerifier({ args: ['--project=mychampions-dev'] });
+      const unsafeTimeout = await runEvidenceVerifier({
+        args: ['--verify'],
+        env: { REVENUECAT_EVIDENCE_TIMEOUT_SECONDS: '601' },
+      });
 
-    const timeoutLoopIndex = evidenceScript.indexOf('while (Date.now() <= deadline)');
-    const providerRefreshIndex = evidenceScript.indexOf(
-      'privileges = await customerManager.getCustomerPrivileges(appUserId)',
-      timeoutLoopIndex
-    );
-    const snapshotRefreshIndex = evidenceScript.indexOf(
-      'from subscription_entitlement_snapshots',
-      timeoutLoopIndex
-    );
-    const combinedConvergenceIndex = evidenceScript.indexOf(
-      'if (providerMatches && snapshotMatches)',
-      timeoutLoopIndex
-    );
-    expect(timeoutLoopIndex).toBeGreaterThan(-1);
-    expect(providerRefreshIndex).toBeGreaterThan(timeoutLoopIndex);
-    expect(snapshotRefreshIndex).toBeGreaterThan(providerRefreshIndex);
-    expect(combinedConvergenceIndex).toBeGreaterThan(snapshotRefreshIndex);
+      expect(unsafeUid.exitCode).toBe(2);
+      expect(unsafeUid.stderr).toContain('REVENUECAT_TEST_APP_USER_ID must be a nonblank safe ID');
+      expect(unknownArgument.exitCode).toBe(2);
+      expect(unknownArgument.stderr).toContain('Unknown argument: --project=mychampions-dev');
+      expect(unsafeTimeout.exitCode).toBe(2);
+      expect(unsafeTimeout.stderr).toContain('REVENUECAT_EVIDENCE_TIMEOUT_SECONDS must be an integer');
+      expect(unsafeUid.railwayArgv).toBeNull();
+      expect(unknownArgument.railwayArgv).toBeNull();
+      expect(unsafeTimeout.railwayArgv).toBeNull();
+    });
+
+    it('runs the read-only program only in the pinned production api service over one remote line', async () => {
+      const program = await readFile(EVIDENCE_PROGRAM, 'utf8');
+      const result = await runEvidenceVerifier({ args: ['--verify'] });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('REVENUECAT_LIVE_EVIDENCE_CONVERGED');
+      expect(result.stdout).toContain('converged in the same iteration');
+      expect(result.railwayStdin).toBe('');
+
+      const [subcommand, ...rest] = result.railwayArgv ?? [];
+      const remoteLine = rest.at(-1) ?? '';
+      expect(subcommand).toBe('ssh');
+      expect(rest).toEqual([
+        '--project',
+        RAILWAY_PRODUCTION_API.projectId,
+        '--environment',
+        RAILWAY_PRODUCTION_API.environmentId,
+        '--service',
+        RAILWAY_PRODUCTION_API.serviceId,
+        '--',
+        remoteLine,
+      ]);
+
+      const match = remoteLine.match(
+        new RegExp(
+          '^cd /app && EVIDENCE_APP_USER_ID=rc-live-contract-test' +
+            ' EVIDENCE_EXPECTED_PROFESSIONAL_STATUS=active' +
+            ' EVIDENCE_EXPECTED_AI_STATUS=lapsed' +
+            ' EVIDENCE_TIMEOUT_SECONDS=180' +
+            ` EVIDENCE_RAILWAY_PROJECT_ID=${RAILWAY_PRODUCTION_API.projectId}` +
+            ` EVIDENCE_RAILWAY_ENVIRONMENT_ID=${RAILWAY_PRODUCTION_API.environmentId}` +
+            ` EVIDENCE_RAILWAY_SERVICE_ID=${RAILWAY_PRODUCTION_API.serviceId}` +
+            ' EVIDENCE_DATABASE_NAME=mychampions_server' +
+            ` bun -e "\\$\\(printf '%s' '([A-Za-z0-9+/=]+)' \\| base64 -d\\)"$`
+        )
+      );
+      expect(match).not.toBeNull();
+      expect(Buffer.from(match?.[1] ?? '', 'base64').toString('utf8')).toBe(program);
+    });
+
+    it('fails when Railway SSH exits 0 without the evidence result', async () => {
+      const result = await runEvidenceVerifier({
+        args: ['--verify'],
+        railwayMode: 'relay-without-command',
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('Railway SSH ended without the evidence result');
+      expect(result.stdout).not.toContain('converged in the same iteration');
+    });
+
+    it('fails with the remote status when the program refuses or fails', async () => {
+      const result = await runEvidenceVerifier({ args: ['--verify'], railwayMode: 'remote-refusal' });
+
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain('Refusing live evidence verification');
+      expect(result.stderr).toContain('Live RevenueCat evidence did not pass (exit 2).');
+      expect(result.stdout).not.toContain('converged in the same iteration');
+    });
+
+    it('keeps the in-container program read-only, credential-free, and same-iteration', async () => {
+      const verifier = await readFile(join(serverRoot, EVIDENCE_SCRIPT), 'utf8');
+      const program = await readFile(EVIDENCE_PROGRAM, 'utf8');
+
+      expect(verifier).not.toContain('digiocean');
+      expect(verifier).not.toContain('docker exec');
+      expect(verifier).not.toMatch(/railway (run|connect|variables)\b/);
+      expect(program).toContain("default_transaction_read_only: 'on'");
+      expect(program).toContain("current_setting('transaction_read_only')");
+      expect(program).toContain('RAILWAY_PROJECT_ID');
+      expect(program).toContain('RAILWAY_ENVIRONMENT_ID');
+      expect(program).toContain('RAILWAY_SERVICE_ID');
+      expect(program).toContain('RevenueCatRestCustomerManager');
+      expect(program).not.toMatch(/\b(insert|update|delete|truncate|drop|alter|grant)\b/i);
+      expect(program).not.toMatch(/console\.\w+\([^;]*(secretApiKey|databaseUrl|DATABASE_URL|REVENUECAT_SECRET_API_KEY)/);
+
+      const readOnlyCheckIndex = program.indexOf("refuse('the database session is not read-only.')");
+      const timeoutLoopIndex = program.indexOf('while (Date.now() <= deadline)', readOnlyCheckIndex);
+      const snapshotRefreshIndex = program.indexOf('from subscription_entitlement_snapshots', timeoutLoopIndex);
+      const providerResetIndex = program.indexOf('privileges = null;', snapshotRefreshIndex);
+      const providerGateIndex = program.indexOf('if (snapshot) {', providerResetIndex);
+      const providerRefreshIndex = program.indexOf(
+        'privileges = await customerManager.getCustomerPrivileges(appUserId)',
+        providerGateIndex
+      );
+      const combinedConvergenceIndex = program.indexOf(
+        'if (providerMatches && snapshotMatches)',
+        providerRefreshIndex
+      );
+      expect(readOnlyCheckIndex).toBeGreaterThan(-1);
+      expect(timeoutLoopIndex).toBeGreaterThan(readOnlyCheckIndex);
+      expect(snapshotRefreshIndex).toBeGreaterThan(timeoutLoopIndex);
+      expect(providerResetIndex).toBeGreaterThan(snapshotRefreshIndex);
+      expect(providerGateIndex).toBeGreaterThan(providerResetIndex);
+      expect(providerRefreshIndex).toBeGreaterThan(providerGateIndex);
+      expect(combinedConvergenceIndex).toBeGreaterThan(providerRefreshIndex);
+    });
   });
 
   it('has a guarded bootstrap path for first public ingress without replacing a healthy slot', async () => {
