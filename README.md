@@ -108,9 +108,70 @@ The parent workspace `bun run local:dev` launcher sets this local mock default
 for the server process only. Direct `bun run dev` inside `server/` follows your
 shell or `.env` value.
 
-## VM Deployment Bootstrap
+## Railway Deployment (production)
 
-The production server is designed for the existing `digiocean` VM topology:
+Production has run on Railway since 2026-10-07 (ET-250). Railway project
+`mychampions-prod` holds the `api` service built from this repository, the
+`food` and `exercise` services, and one managed Postgres instance with the
+`mychampions_server`, `mychampions_food_catalog`, and
+`mychampions_exercise_catalog` databases. The public endpoint is still
+`https://api.mychampions.eduwaldo.com`, now a custom domain on the `api`
+service. Railway's edge terminates TLS and forwards requests to the container;
+there is no Nginx in front of the server.
+
+Every push to `main` deploys, including docs-only changes.
+`.github/workflows/deploy-prod.yml` runs `railway up` for service `api` in
+environment `production` with the `RAILWAY_PROD_PROJECT_TOKEN` repository
+secret; **Run workflow** on that workflow redeploys `main` by hand. Railway
+builds the root `Dockerfile`, then runs the service's pre-deploy command,
+`bun run db:migrate`, before the new version starts. A failed migration stops
+the deployment and the previous one keeps serving. The workflow passes only
+when Railway reports the new deployment `SUCCESS`, the deployment log shows
+the migrations applied, and `/health` answers `ok`.
+
+The image entrypoint is `infra/railway/start.sh`. Railway has no secret files,
+so the GCS service-account key arrives base64-encoded in
+`GCS_SERVICE_ACCOUNT_JSON_B64`; the script writes it to a `0600` file and
+points `STORAGE_GCS_CREDENTIALS_PATH` at it before starting the server.
+
+Service variables live in Railway, not in this repository. With
+`NODE_ENV=production` the server needs:
+
+| Variables | Notes |
+|---|---|
+| `NODE_ENV=production`, `APP_VARIANT=production`, `LOCAL_DEV_AUTH_ENABLED=false` | Production behavior; the local dev-session routes stay off. |
+| `DATABASE_URL`, `FOOD_CATALOG_DATABASE_URL`, `EXERCISE_CATALOG_DATABASE_URL` | Railway Postgres connection strings. The defaults point at local Docker. |
+| `AUTH_JWT_PRIVATE_JWK` | Required in production. Changing it invalidates every issued access and refresh token. |
+| `JWT_ISSUER`, `JWT_AUDIENCE` | Must stay the same as the values existing tokens were issued with. |
+| `JWT_PLUGIN_SECRET` | A random secret for the Elysia JWT plugin; it does not sign MyChampions tokens. The default is a public local value. |
+| `GCS_BUCKET`, `GCS_SERVICE_ACCOUNT_JSON_B64`, `STORAGE_GCS_USE_ADC=false` | Private media storage. |
+| `GOOGLE_ANDROID_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`, `GOOGLE_WEB_CLIENT_ID`, `APPLE_CLIENT_ID`, `APPLE_WEB_CLIENT_ID` | Audiences for Google/Apple sign-in. |
+| `REVENUECAT_SECRET_API_KEY`, `REVENUECAT_WEBHOOK_AUTHORIZATION`, `REVENUECAT_WEBHOOK_SIGNING_SECRET` | The RevenueCat webhook stays disabled in production until all three are set. |
+| `WEB_ALLOWED_ORIGINS` | Empty by default in production, so no website gets credentialed browser access. |
+| `PORT` | Defaults to `3400`; the Railway domain must target the port the server listens on. |
+| `TRUSTED_PROXY_HEADER=x-real-ip` | The only header the auth rate limiter trusts for the client address (Railway's edge sets `X-Real-IP`). The server refuses to start in production without it. |
+
+`MEAL_PHOTO_ANALYZER`, `AUTH_RATE_LIMIT_WINDOW_MS`, and `AUTH_RATE_LIMIT_MAX`
+are optional.
+
+To undo a bad release, use **Rollback** on an earlier deployment in the `api`
+service's **Deployments** list in Railway; the next push to `main` deploys
+again. Migrations are forward-only: a rollback does not undo schema changes,
+so the older version runs against the newer schema.
+
+The Dev API runs separately in Railway project `mychampions-dev` (service
+`api`, with its own Postgres holding the Dev database and copies of both
+catalogs) at `https://dev.mychampions.eduwaldo.com`. No workflow in this
+repository deploys it.
+
+## VM Deployment Bootstrap (retired)
+
+Retired on 2026-10-07 (ET-250): production and Dev moved to Railway (see
+"Railway Deployment"), and every MyChampions container and database was removed
+from the `digiocean` VM. The scripts and configs below remain in the
+repository for reference; they target a VM that no longer runs the server.
+
+This path was designed for the `digiocean` VM topology:
 Postgres stays loopback-only in `eduwaldo-postgres`, while the server containers
 join Docker's external `root_default` network and are exposed only on
 `127.0.0.1:3400` and `127.0.0.1:3401`. Nginx is the only public ingress.
@@ -200,6 +261,11 @@ certificate for `PUBLIC_DOMAIN`; it redirects HTTP to HTTPS and proxies both
 the health route and API traffic to the active loopback slot.
 
 ### Firebase distribution Dev API
+
+Retired with the VM: the Dev API now runs in Railway project `mychampions-dev`
+at `https://dev.mychampions.eduwaldo.com`. The `dev.165.22.147.90.sslip.io`
+address stopped working on 2026-10-08, when the VM's last Nginx forwards were
+removed; Dev builds must use the new address.
 
 Firebase App Distribution receives only the `MyChampions Dev` mobile identities.
 Those builds must not point at the production API or database. The Dev runtime
@@ -381,15 +447,16 @@ evaluation use the shared database clock after acquiring the per-user lock.
 Logs contain the outcome only (`accepted`, `replayed`, `limited`, or `failed`),
 never support content, account identifiers, or idempotency keys.
 
-Production ingress installs `infra/nginx/mychampions-server-rate-limits.conf`
+The retired VM ingress installs `infra/nginx/mychampions-server-rate-limits.conf`
 into Nginx's `http` context and applies its deliberately higher coarse per-IP
 guard only to `POST /support/messages`. Its method map leaves CORS `OPTIONS`
 preflights and other methods unmetered, and it keys POST requests from
 `$binary_remote_addr`, not forwarding headers supplied by the client. When the
 edge guard rejects a burst, its internal named location returns the same typed
 `support_rate_limited` JSON with `Retry-After: 2` and content-free browser CORS
-headers, so web clients can read the response. The server's authenticated
-PostgreSQL quota remains the authoritative enforcement.
+headers, so web clients can read the response. Railway production has no
+equivalent edge guard; there the server's authenticated PostgreSQL quota is the
+only enforcement, and it remains the authoritative one everywhere.
 
 `POST /analytics/events` accepts unauthenticated provider-neutral mobile analytics events and stores them in local Postgres table `analytics_events`. The route is intentionally available before auth so auth-entry events can be captured, but it rejects any event properties containing sensitive keys such as email, tokens, passwords, invite codes, or secrets. The mobile analytics hook sends redacted best-effort events to this route when `EXPO_PUBLIC_MYCHAMPIONS_SERVER_URL` or Expo `extra.server.baseUrl` is configured.
 
@@ -412,7 +479,9 @@ The verifier defaults to a no-SSH dry run when `--verify` is omitted, refuses
 hosts other than `digiocean`, requires exactly one running server slot, and
 refreshes both canonical provider privileges and the server snapshot inside
 the bounded timeout loop. It succeeds only when both reads match the expected
-independent privileges in the same iteration.
+independent privileges in the same iteration. It was built for the retired VM:
+it reads the snapshot over SSH from a running `digiocean` server container, so
+it cannot verify Railway production until it is ported.
 
 `GET /connections` lists the authenticated user's student-side and professional-side connections from local Postgres table `connections`. The mobile client uses this endpoint for `getMyConnections()` when a local server bearer token is available.
 
