@@ -59,6 +59,7 @@ describe('VM deployment contract', () => {
     expect(provision).toContain('REVENUECAT_SECRET_API_KEY=');
     expect(provision).toContain('REVENUECAT_WEBHOOK_AUTHORIZATION=');
     expect(provision).toContain('REVENUECAT_WEBHOOK_SIGNING_SECRET=');
+    expect(provision).toContain('TRUSTED_PROXY_HEADER=x-real-ip');
     expect(provision).toContain('--apply');
     expect(provision).toContain('psql_admin_query()');
     expect(provision).toContain('psql_admin_stdin()');
@@ -237,6 +238,7 @@ describe('VM deployment contract', () => {
     expect(provision).toContain('NODE_ENV=development');
     expect(provision).toContain('APP_VARIANT=dev');
     expect(provision).toContain('LOCAL_DEV_AUTH_ENABLED=false');
+    expect(provision).toContain('TRUSTED_PROXY_HEADER=x-real-ip');
     expect(provision).toContain('NOSUPERUSER NOCREATEDB NOCREATEROLE');
     expect(ingress).toContain('127.0.0.1:3402');
     expect(deploy).toContain('run --rm migrate');

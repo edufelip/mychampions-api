@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { createApp } from '../src/app';
+import { authRateLimitClientKey, createApp } from '../src/app';
 import { InMemoryPasswordResetService } from '../src/auth/password-reset';
 import { readConfig } from '../src/config';
 import type { ProfileRepository } from '../src/profile/repository';
@@ -145,8 +145,8 @@ describe('auth rate limiting', () => {
     expect(healthResponse.status).toBe(200);
   });
 
-  it('tracks separate budgets per client IP using the X-Real-IP header set by Nginx', async () => {
-    const app = makeApp();
+  it('tracks separate budgets per client IP using the trusted X-Real-IP header', async () => {
+    const app = makeApp({ TRUSTED_PROXY_HEADER: 'x-real-ip' });
 
     const clientAStatuses: number[] = [];
     for (let i = 0; i < 3; i += 1) {
@@ -167,5 +167,92 @@ describe('auth rate limiting', () => {
       devSessionRequest('client-b-0@example.test', { 'x-real-ip': '203.0.113.20' })
     );
     expect(clientBFirst.status).toBe(201);
+  });
+
+  it('keys on the socket address so spoofed X-Real-IP cannot reset the budget', async () => {
+    // No TRUSTED_PROXY_HEADER: a client reaching the server directly rotates the
+    // forwarding headers on every request, but they are ignored.
+    const app = makeApp().listen({ hostname: '127.0.0.1', port: 0 });
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const response = await fetch(`http://127.0.0.1:${app.server!.port}/auth/password-reset`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-real-ip': `198.51.100.${i}`,
+            'x-forwarded-for': `198.51.100.${i + 100}`,
+          },
+          body: JSON.stringify({ email: 'flood-target@example.test' }),
+        });
+        statuses.push(response.status);
+      }
+      expect(statuses).toEqual([202, 202, 202, 429]);
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it('never falls back to X-Forwarded-For when the trusted header is missing', async () => {
+    const app = makeApp({ TRUSTED_PROXY_HEADER: 'x-real-ip' });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const response = await app.handle(
+        devSessionRequest(`xff-${i}@example.test`, { 'x-forwarded-for': `198.51.100.${i}` })
+      );
+      statuses.push(response.status);
+    }
+    expect(statuses).toEqual([201, 201, 201, 429]);
+  });
+
+  it('keys on the last trusted-header entry, the one the proxy added', async () => {
+    const app = makeApp({ TRUSTED_PROXY_HEADER: 'x-real-ip' });
+
+    // Railway and Nginx overwrite X-Real-IP. If a proxy appended to a client's
+    // value instead, the client's spoofed part comes first and is ignored.
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const response = await app.handle(
+        devSessionRequest(`appended-${i}@example.test`, {
+          'x-real-ip': `198.51.100.${i}, 203.0.113.10`,
+        })
+      );
+      statuses.push(response.status);
+    }
+    expect(statuses).toEqual([201, 201, 201, 429]);
+
+    // A different proxy-added address is a different client with its own budget.
+    const otherClient = await app.handle(
+      devSessionRequest('appended-other@example.test', {
+        'x-real-ip': '198.51.100.9, 203.0.113.11',
+      })
+    );
+    expect(otherClient.status).toBe(201);
+  });
+});
+
+describe('auth rate-limit client key', () => {
+  const serverWithAddress = (address: string) => ({ requestIP: () => ({ address }) });
+  const keyRequest = (headers: Record<string, string> = {}) =>
+    new Request('http://server.test/auth/email/sign-in', { headers });
+
+  it('keys on the socket address and ignores forwarding headers when none is trusted', () => {
+    const key = authRateLimitClientKey(null);
+    const spoofed = keyRequest({ 'x-real-ip': '198.51.100.1', 'x-forwarded-for': '198.51.100.2' });
+
+    expect(key(spoofed, serverWithAddress('192.0.2.10'))).toBe('192.0.2.10');
+    expect(key(spoofed, serverWithAddress('192.0.2.20'))).toBe('192.0.2.20');
+  });
+
+  it('uses the last trusted-header entry and otherwise the socket address', () => {
+    const key = authRateLimitClientKey('x-real-ip');
+    const socket = serverWithAddress('192.0.2.10');
+
+    expect(key(keyRequest({ 'x-real-ip': '198.51.100.1, 203.0.113.10' }), socket)).toBe(
+      '203.0.113.10'
+    );
+    expect(key(keyRequest({ 'x-forwarded-for': '198.51.100.1' }), socket)).toBe('192.0.2.10');
+    expect(key(keyRequest({ 'x-real-ip': '203.0.113.10, ' }), socket)).toBe('192.0.2.10');
   });
 });
