@@ -140,6 +140,7 @@ function makeRevenueCatCustomerManager(
 
 const environmentKeys = [
   'NODE_ENV',
+  'TRUSTED_PROXY_HEADER',
   'REVENUECAT_SECRET_API_KEY',
   'REVENUECAT_WEBHOOK_AUTHORIZATION',
   'REVENUECAT_WEBHOOK_SIGNING_SECRET',
@@ -383,6 +384,7 @@ describe('subscription entitlement snapshot API', () => {
 
   it('refuses authenticated client entitlement writes in production', async () => {
     process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_PROXY_HEADER = 'x-real-ip';
     const subscriptions = makeSubscriptionRepository();
     const tokenService = createTokenService({
       issuer: 'mychampions-local',
@@ -455,6 +457,7 @@ describe('subscription entitlement snapshot API', () => {
 
   it('requires a webhook signing secret before accepting RevenueCat events in production', async () => {
     process.env.NODE_ENV = 'production';
+    process.env.TRUSTED_PROXY_HEADER = 'x-real-ip';
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION = 'Bearer webhook-secret';
     delete process.env.REVENUECAT_WEBHOOK_SIGNING_SECRET;
     const subscriptions = makeSubscriptionRepository();

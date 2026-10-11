@@ -19,7 +19,35 @@ describe('server configuration', () => {
   });
 
   it('fails closed when production web origins are not configured', () => {
-    expect(readConfig({ NODE_ENV: 'production' }).allowedWebOrigins).toEqual([]);
+    expect(
+      readConfig({ NODE_ENV: 'production', TRUSTED_PROXY_HEADER: 'x-real-ip' }).allowedWebOrigins
+    ).toEqual([]);
+  });
+
+  it('trusts no client-address header unless one is configured', () => {
+    expect(readConfig({}).trustedProxyHeader).toBeNull();
+    expect(readConfig({ TRUSTED_PROXY_HEADER: 'none' }).trustedProxyHeader).toBeNull();
+    expect(readConfig({ TRUSTED_PROXY_HEADER: ' X-Real-IP ' }).trustedProxyHeader).toBe(
+      'x-real-ip'
+    );
+    expect(readConfig({ TRUSTED_PROXY_HEADER: 'x_client.ip' }).trustedProxyHeader).toBe(
+      'x_client.ip'
+    );
+  });
+
+  it('requires production to choose the trusted proxy header explicitly', () => {
+    expect(() => readConfig({ NODE_ENV: 'production' })).toThrow(
+      'TRUSTED_PROXY_HEADER must be set in production'
+    );
+    expect(
+      readConfig({ NODE_ENV: 'production', TRUSTED_PROXY_HEADER: 'none' }).trustedProxyHeader
+    ).toBeNull();
+  });
+
+  it('rejects a trusted proxy header that is not a single header name', () => {
+    expect(() => readConfig({ TRUSTED_PROXY_HEADER: 'x-real-ip, x-forwarded-for' })).toThrow(
+      'TRUSTED_PROXY_HEADER must be a request header name or none.'
+    );
   });
 
   it('trims server-only RevenueCat customer and webhook credentials', () => {

@@ -363,7 +363,7 @@ other direct data.
 
 `POST /auth/password-reset/confirm` accepts `{ email, token, newPassword }` and completes a password reset in one atomic step. The server-owned password-reset service first checks with a cheap read that the token is still redeemable, so an unknown, expired, or used token is rejected before any Argon2id work. It then hashes the new password with Argon2id and, inside one database transaction, conditionally marks the matching `password_reset_requests` row `consumed` (SHA-256 token digest for that email, still `pending`, unexpired), updates the matching `local_email_auth_credentials` row, and revokes every existing `auth_sessions` row for that account. If any step fails the whole transaction rolls back, so a token is consumed only when the password update succeeds and can be redeemed at most once; concurrent confirmations of the same token commit exactly one password update. After the commit the route also revokes all refresh sessions for that account through the refresh-session service, so a stolen session cannot outlive the reset with any completion implementation. An invalid, expired, or already-consumed token returns `400 invalid_or_expired_token` without touching any account. A valid token for an email with no local email/password account returns that same `400 invalid_or_expired_token` response (and the token stays pending), so the route never reveals whether an email is registered. A successful reset returns `{ "status": "reset" }`. The in-memory service used without Postgres follows the same contract: it claims the token before the password update and releases it if the update fails, so an unconfigured email auth provider returns `503 configuration` and leaves the token pending.
 
-The credential-adjacent routes — `POST /auth/dev/session`, `POST /auth/email/sign-in`, `POST /auth/social/sign-in`, `POST /auth/password-reset`, and `POST /auth/password-reset/confirm` — share one `elysia-rate-limit` per-IP budget (`AUTH_RATE_LIMIT_MAX` requests per `AUTH_RATE_LIMIT_WINDOW_MS`, default 20 per 60s) so brute-force/credential-stuffing sign-in attempts and password-reset/email-bombing floods are throttled with a `429` once the budget is exhausted (the same path with one trailing slash, which Elysia routes to the same handler, draws on the same budget), mirroring the `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX` pattern already used by `mychampionsapi-food`/`mychampionsapi-exercises`. Every other route (including `POST /auth/email/create-account`) is unaffected. The client key comes from the `X-Real-IP` header Nginx sets to `$remote_addr` on every proxied request (falling back to the Bun-reported socket address when the header is absent, e.g. local dev); trusting that header is safe only because the server binds to `127.0.0.1` and Nginx is the sole public ingress (see "VM Deployment Bootstrap"). Owned browser/native test sessions (`scripts/testing/session.ts`) start their disposable API with `AUTH_RATE_LIMIT_MAX=1000` because one journey signs in many times through one loopback IP; the owned integration runner and every deployment keep the default (see [docs/testing.md](docs/testing.md#owned-session-auth-rate-limit)).
+The credential-adjacent routes — `POST /auth/dev/session`, `POST /auth/email/sign-in`, `POST /auth/social/sign-in`, `POST /auth/password-reset`, and `POST /auth/password-reset/confirm` — share one `elysia-rate-limit` per-IP budget (`AUTH_RATE_LIMIT_MAX` requests per `AUTH_RATE_LIMIT_WINDOW_MS`, default 20 per 60s) so brute-force/credential-stuffing sign-in attempts and password-reset/email-bombing floods are throttled with a `429` once the budget is exhausted (the same path with one trailing slash, which Elysia routes to the same handler, draws on the same budget), mirroring the `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX` pattern already used by `mychampionsapi-food`/`mychampionsapi-exercises`. Every other route (including `POST /auth/email/create-account`) is unaffected. A client can send any forwarding header, so the client key trusts only the one header named by `TRUSTED_PROXY_HEADER`, which must be a header the deployment's own proxy overwrites on every request; every other forwarding header, including `X-Forwarded-For` unless it is the one named, is ignored. Set `TRUSTED_PROXY_HEADER=x-real-ip` on Railway and on the Nginx VM. Railway's [public networking docs](https://docs.railway.com/networking/public-networking/specs-and-limits) name `X-Real-IP` as the header carrying the client's remote IP, and Railway staff state its edge always overwrites a client-sent copy (the docs themselves do not describe overwrite behavior, and staff answers about `X-Forwarded-For` contradict each other, which is why Railway uses `X-Real-IP`). Nginx sets `X-Real-IP` to `$remote_addr`; the VM provisioning scripts write the setting, and a VM `.env` created before it existed needs the line added. If the trusted header holds a comma-separated list, the last entry (the one the nearest proxy added) is used; if it is missing or empty on a request, the key falls back to the socket address, which behind a proxy is the proxy's, so such requests share one budget. When `TRUSTED_PROXY_HEADER` is unset or `none`, no header is trusted and the key is the Bun-reported socket address, which a client cannot forge; use that for local dev or any deployment without a header-overwriting proxy. With `NODE_ENV=production` the server refuses to start unless the variable is set explicitly, because behind a proxy the socket address is the proxy's and every client would share one budget. Owned browser/native test sessions (`scripts/testing/session.ts`) start their disposable API with `AUTH_RATE_LIMIT_MAX=1000` because one journey signs in many times through one loopback IP; the owned integration runner and every deployment keep the default (see [docs/testing.md](docs/testing.md#owned-session-auth-rate-limit)).
 
 `POST /support/messages` stores write-only support requests in local Postgres table `support_messages`. The mobile client sends subject/body plus app metadata; the server derives authenticated user metadata from the bearer token and stores new messages with `status='pending'`.
 
@@ -410,11 +410,33 @@ EXPECTED_AI_STATUS=lapsed \
 bun run evidence:revenuecat-live -- --verify
 ```
 
-The verifier defaults to a no-SSH dry run when `--verify` is omitted, refuses
-hosts other than `digiocean`, requires exactly one running server slot, and
-refreshes both canonical provider privileges and the server snapshot inside
-the bounded timeout loop. It succeeds only when both reads match the expected
-independent privileges in the same iteration.
+The verifier defaults to a dry run that contacts nothing when `--verify` is
+omitted. With `--verify` it needs a logged-in Railway CLI and an SSH key
+registered with Railway (`railway ssh keys list`). It opens `railway ssh` to the
+production `api` service, pinned by id to project `mychampions-prod` and
+environment `production` (names alone are ambiguous: `mychampions-dev` also has
+an `api` service in an environment named `production`). The CLI's stdin is
+`/dev/null`, so it never registers an SSH key on its own. This CLI behavior is
+taken from Railway CLI 5.63.3, the version the deploy workflow pins.
+
+Over that session it runs `infra/scripts/revenuecat-live-evidence.remote.ts`
+with `bun -e` inside the container. The program uses the container's own
+`DATABASE_URL` and `REVENUECAT_SECRET_API_KEY`, so no credential reaches the
+local machine or the command line. Before reading anything it checks the
+container's `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, and
+`RAILWAY_SERVICE_ID`, then the connected database name (`mychampions_server`).
+It reads through a Postgres session opened with
+`default_transaction_read_only=on`, and refuses to continue unless Postgres
+reports the session read-only.
+
+Inside the bounded timeout loop it re-reads the snapshot every iteration. It
+reads RevenueCat only once a snapshot row exists for the App User ID, because
+RevenueCat's v1 customer lookup creates a customer for an unknown ID, and
+production snapshots come only from the signed webhook. The verifier succeeds
+only when both reads match the expected independent privileges in the same
+iteration and the program prints its result marker. The Railway SSH relay can
+end a session with exit 0 without running the command, so exit 0 alone is not
+treated as a pass.
 
 `GET /connections` lists the authenticated user's student-side and professional-side connections from local Postgres table `connections`. On active and pending connections where the caller is the professional, each record also carries `studentDisplayName` (the student's trimmed profile display name, or `null`), matching the names `GET /professional/students` already returns; student-side records carry no student fields. The mobile client uses this endpoint for `getMyConnections()` when a local server bearer token is available.
 

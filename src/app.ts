@@ -198,20 +198,24 @@ function isAuthRateLimitedPath(pathname: string): boolean {
   return AUTH_RATE_LIMITED_PATHS.has(pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname);
 }
 
-// The server only accepts traffic on 127.0.0.1 behind Nginx (see README "VM
-// Deployment Bootstrap"), so the reverse proxy is the only thing that can set
-// these headers in production; trusting them here does not open a spoofing
-// path. Nginx sets X-Real-IP to $remote_addr on every proxied request.
-function authRateLimitClientKey(
-  request: Request,
-  server: { requestIP: (request: Request) => { address: string } | null } | null
-): string {
-  const forwardedFor = request.headers.get('x-real-ip') ?? request.headers.get('x-forwarded-for');
-  const forwardedIp = forwardedFor?.split(',')[0]?.trim();
-  if (forwardedIp) {
-    return forwardedIp;
-  }
-  return server?.requestIP(request)?.address ?? 'unknown';
+// Clients can send any forwarding header, so the key trusts only the one header
+// this deployment's own proxy overwrites (TRUSTED_PROXY_HEADER: X-Real-IP on
+// Railway's edge and on the Nginx VM). Every other header is ignored. With no
+// trusted header the key is the socket address, which a client cannot forge.
+export function authRateLimitClientKey(trustedProxyHeader: string | null) {
+  return (
+    request: Request,
+    server: { requestIP: (request: Request) => { address: string } | null } | null
+  ): string => {
+    // A proxy that appends instead of overwriting adds its own value last.
+    const proxyValue = trustedProxyHeader
+      ? request.headers.get(trustedProxyHeader)?.split(',').pop()?.trim()
+      : undefined;
+    if (proxyValue) {
+      return proxyValue;
+    }
+    return server?.requestIP(request)?.address ?? 'unknown';
+  };
 }
 
 function normalizeEmail(email: string): string {
@@ -1482,7 +1486,7 @@ export function createApp(deps: CreateAppDeps = {}) {
       rateLimit({
         duration: config.authRateLimitWindowMs,
         max: config.authRateLimitMax,
-        generator: authRateLimitClientKey,
+        generator: authRateLimitClientKey(config.trustedProxyHeader),
         skip: (request) => !isAuthRateLimitedPath(new URL(request.url).pathname),
       })
     )

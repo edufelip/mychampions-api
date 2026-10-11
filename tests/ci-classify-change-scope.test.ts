@@ -50,8 +50,36 @@ describe('classify', () => {
     }
   });
 
-  test('infra and env-example changes stay narrow', () => {
-    const result = classify(['infra/main.tf', '.env.example', '.gitignore']);
+  // These files are read or spawned by contract tests, not imported, so
+  // `bun test --changed` would select zero tests for them.
+  test('infra changes force full scope', () => {
+    for (const path of [
+      'infra/scripts/revenuecat-live-evidence.remote.ts',
+      'infra/scripts/deploy-vm.sh',
+      'infra/railway/start.sh',
+      'infra/nginx/mychampions-server.conf',
+      'infra/docker-compose.vm.yml',
+    ]) {
+      const result = classify([path]);
+      expect(result.fullScope).toBe(true);
+      expect(result.fullScopeHits).toEqual([path]);
+    }
+  });
+
+  test('env-example changes force full scope', () => {
+    const result = classify(['.env.example']);
+    expect(result.fullScope).toBe(true);
+    expect(result.fullScopeHits).toEqual(['.env.example']);
+  });
+
+  test('infra change mixed with docs still forces full scope', () => {
+    const result = classify(['infra/railway/start.sh', 'README.md', 'docs/qa-smoke-pack.md']);
+    expect(result.fullScope).toBe(true);
+    expect(result.fullScopeHits).toEqual(['infra/railway/start.sh']);
+  });
+
+  test('gitignore changes stay narrow', () => {
+    const result = classify(['.gitignore']);
     expect(result.fullScope).toBe(false);
   });
 

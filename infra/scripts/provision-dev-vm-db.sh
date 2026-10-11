@@ -180,6 +180,7 @@ WEB_ALLOWED_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 REVENUECAT_SECRET_API_KEY=
 REVENUECAT_WEBHOOK_AUTHORIZATION=
 REVENUECAT_WEBHOOK_SIGNING_SECRET=
+TRUSTED_PROXY_HEADER=x-real-ip
 EOF
 install -m 600 "$temporary_env_file" "$remote_env_file"
 rm -f "$temporary_env_file"
