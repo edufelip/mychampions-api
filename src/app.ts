@@ -192,10 +192,14 @@ const AUTH_RATE_LIMITED_PATHS = new Set([
   "/auth/password-reset/confirm",
 ]);
 
-// Elysia also routes a path with one trailing slash ("/auth/email/sign-in/") to the
-// same handler, so the limiter must match that form too or it is a free bypass.
-function isAuthRateLimitedPath(pathname: string): boolean {
-  return AUTH_RATE_LIMITED_PATHS.has(pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname);
+// Elysia also routes a path with exactly one trailing slash ("/auth/email/sign-in/") to
+// the same handler (two or more are not routed), so the limiter must match that form too
+// or it is a free bypass. This runs on every request, so it strips at most one slash in
+// constant time; a regex such as /\/+$/ backtracks quadratically on long slash runs.
+export function isAuthRateLimitedPath(pathname: string): boolean {
+  const normalized =
+    pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return AUTH_RATE_LIMITED_PATHS.has(normalized);
 }
 
 // Clients can send any forwarding header, so the key trusts only the one header
@@ -1821,9 +1825,10 @@ export function createApp(deps: CreateAppDeps = {}) {
           return passwordResetConfirmErrorResponse(error, set);
         }
 
-        // The Postgres completion already revokes these sessions inside its transaction;
-        // revoking here keeps the guarantee for every completion implementation and is
-        // idempotent (only sessions that are not yet revoked are touched).
+        // Required, not redundant: the Postgres completion revokes sessions inside its
+        // transaction, but a refresh rotation that commits while that transaction waits can
+        // insert a session it never sees. Revoking after commit catches it and covers
+        // completion implementations without their own revoke; it is idempotent.
         await refreshSessionService.revokeAllForAuthUid(completion.authUid);
 
         set.status = 200;

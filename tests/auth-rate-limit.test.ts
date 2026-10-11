@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { authRateLimitClientKey, createApp } from '../src/app';
+import { authRateLimitClientKey, createApp, isAuthRateLimitedPath } from '../src/app';
 import { InMemoryPasswordResetService } from '../src/auth/password-reset';
 import { readConfig } from '../src/config';
 import type { ProfileRepository } from '../src/profile/repository';
@@ -288,5 +288,32 @@ describe('auth rate-limit client key', () => {
     );
     expect(key(keyRequest({ 'x-forwarded-for': '198.51.100.1' }), socket)).toBe('192.0.2.10');
     expect(key(keyRequest({ 'x-real-ip': '203.0.113.10, ' }), socket)).toBe('192.0.2.10');
+  });
+
+  it('does not route a doubled trailing slash, so stripping one slash leaves no bypass', async () => {
+    const app = makeApp();
+    const response = await app.handle(
+      new Request('http://server.test/auth/password-reset/confirm//', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'flood-target@example.test',
+          token: 'not-a-real-token',
+          newPassword: 'Password1!',
+        }),
+      })
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it('classifies long runs of slashes in constant time', () => {
+    // A backtracking /\/+$/ took over a second here; this check runs on every request.
+    const hostile = '/' + '/'.repeat(64_000) + 'x';
+    const started = performance.now();
+    expect(isAuthRateLimitedPath(hostile)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(50);
+    expect(isAuthRateLimitedPath('/auth/email/sign-in/')).toBe(true);
+    expect(isAuthRateLimitedPath('/auth/email/sign-in//')).toBe(false);
   });
 });
