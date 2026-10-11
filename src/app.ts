@@ -1829,7 +1829,17 @@ export function createApp(deps: CreateAppDeps = {}) {
         // transaction, but a refresh rotation that commits while that transaction waits can
         // insert a session it never sees. Revoking after commit catches it and covers
         // completion implementations without their own revoke; it is idempotent.
-        await refreshSessionService.revokeAllForAuthUid(completion.authUid);
+        // The reset has committed by now, so a failure here must not answer an error: the
+        // client's retry would only meet a consumed token. Try once more, then report it.
+        try {
+          await refreshSessionService.revokeAllForAuthUid(completion.authUid);
+        } catch {
+          try {
+            await refreshSessionService.revokeAllForAuthUid(completion.authUid);
+          } catch {
+            console.error(JSON.stringify({ event: 'password_reset_post_commit_revoke_failed' }));
+          }
+        }
 
         set.status = 200;
         return { status: 'reset' };

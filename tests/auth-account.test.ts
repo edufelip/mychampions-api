@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 
 import { createApp } from '../src/app';
 import type { EmailAuthGateway } from '../src/auth/email-auth';
@@ -423,5 +423,51 @@ describe('POST /auth/password-reset/confirm', () => {
       },
     ]);
     expect(revokedAuthUids).toEqual(['local_email_user_1']);
+  });
+
+  it('reports a committed reset as reset when the post-commit revoke fails', async () => {
+    const passwordResetCompletionService: PasswordResetCompletionService = {
+      async confirmAndUpdatePassword() {
+        return { requestId: 'reset_1', authUid: 'local_email_user_1' };
+      },
+    };
+    const makeApp = (revokeAllForAuthUid: (authUid: string) => Promise<void>) => {
+      const { service: refreshSessionService } = makeRefreshSessionServiceSpy();
+      refreshSessionService.revokeAllForAuthUid = revokeAllForAuthUid;
+      return createApp({
+        profileRepository: makeProfileRepository(),
+        supportMessageRepository,
+        passwordResetCompletionService,
+        refreshSessionService,
+      });
+    };
+    const body = { email: 'user@example.test', token: 'good-token', newPassword: 'NewPassword1!' };
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // One transient failure: the revoke is retried once and succeeds.
+      let attempts = 0;
+      const retried = await makeApp(async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('transient');
+      }).handle(confirmRequest(body));
+      expect(retried.status).toBe(200);
+      await expect(retried.json()).resolves.toEqual({ status: 'reset' });
+      expect(attempts).toBe(2);
+      expect(errorSpy).not.toHaveBeenCalled();
+
+      // Both attempts fail: the reset still answers reset and logs no email or token.
+      const failed = await makeApp(async () => {
+        throw new Error('database unavailable');
+      }).handle(confirmRequest(body));
+      expect(failed.status).toBe(200);
+      await expect(failed.json()).resolves.toEqual({ status: 'reset' });
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(errorSpy.mock.calls);
+      expect(logged).toContain('password_reset_post_commit_revoke_failed');
+      expect(logged).not.toContain('user@example.test');
+      expect(logged).not.toContain('good-token');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
