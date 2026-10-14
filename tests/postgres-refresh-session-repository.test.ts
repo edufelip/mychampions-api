@@ -1,12 +1,11 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 
 import { createDatabase } from '../src/db/client';
 import { PostgresRefreshSessionRepository } from '../src/auth/postgres-refresh-session-repository';
 
-const databaseUrl =
-  process.env.DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_server_local';
+const databaseUrl = await requireOwnedTestDatabase('DATABASE_URL');
 const database = createDatabase(databaseUrl);
 const repository = new PostgresRefreshSessionRepository(database.db);
 

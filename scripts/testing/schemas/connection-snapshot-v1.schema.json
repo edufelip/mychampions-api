@@ -1,0 +1,364 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/connection-snapshot-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "connection-snapshot-v1" },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{24}$"
+    },
+    "scope": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,32}$"
+    },
+    "readOnly": { "const": true },
+    "fixtureAuthUids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "professionalAuthUid": {
+          "type": "string",
+          "minLength": 1
+        },
+        "studentAuthUid": {
+          "type": "string",
+          "minLength": 1
+        },
+        "specialty": { "const": "fitness_coach" }
+      },
+      "required": ["professionalAuthUid", "studentAuthUid", "specialty"]
+    },
+    "rowCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "userProfiles": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "professionalSpecialties": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "inviteCodes": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "connections": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "connectionInviteGuards": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "pendingStudents": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "pendingStudentSlots": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "trackingAccess": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "activeSpecialties": { "type": "integer", "minimum": 0, "maximum": 200 }
+      },
+      "required": [
+        "userProfiles",
+        "professionalSpecialties",
+        "inviteCodes",
+        "connections",
+        "connectionInviteGuards",
+        "pendingStudents",
+        "pendingStudentSlots",
+        "trackingAccess",
+        "activeSpecialties"
+      ]
+    },
+    "rows": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "userProfiles": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/userProfile" }
+        },
+        "professionalSpecialties": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/professionalSpecialty" }
+        },
+        "inviteCodes": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/inviteCode" }
+        },
+        "connections": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/connection" }
+        },
+        "connectionInviteGuards": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/connectionInviteGuard" }
+        },
+        "pendingStudents": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/pendingStudent" }
+        },
+        "pendingStudentSlots": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/pendingStudentSlot" }
+        },
+        "trackingAccess": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/trackingAccess" }
+        },
+        "activeSpecialties": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/activeSpecialty" }
+        }
+      },
+      "required": [
+        "userProfiles",
+        "professionalSpecialties",
+        "inviteCodes",
+        "connections",
+        "connectionInviteGuards",
+        "pendingStudents",
+        "pendingStudentSlots",
+        "trackingAccess",
+        "activeSpecialties"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "kind",
+    "runId",
+    "scope",
+    "readOnly",
+    "fixtureAuthUids",
+    "target",
+    "rowCounts",
+    "rows"
+  ],
+  "definitions": {
+    "timestamp": {
+      "type": "string",
+      "minLength": 1
+    },
+    "specialty": {
+      "enum": ["nutritionist", "fitness_coach"]
+    },
+    "userProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authUid": { "type": "string", "minLength": 1 },
+        "lockedRole": { "enum": ["student", "professional", null] },
+        "acceptedTermsVersion": { "type": ["string", "null"] },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "authUid",
+        "lockedRole",
+        "acceptedTermsVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "professionalSpecialty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "specialty": { "$ref": "#/definitions/specialty" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "id",
+        "professionalAuthUid",
+        "specialty",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "inviteCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "specialty": { "$ref": "#/definitions/specialty" },
+        "status": { "enum": ["active", "rotated", "revoked"] },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" },
+        "rotatedAt": { "type": ["string", "null"] }
+      },
+      "required": [
+        "id",
+        "professionalAuthUid",
+        "specialty",
+        "status",
+        "createdAt",
+        "updatedAt",
+        "rotatedAt"
+      ]
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "studentAuthUid": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": ["invited", "pending_confirmation", "active", "ended"]
+        },
+        "specialty": { "$ref": "#/definitions/specialty" },
+        "canceledReason": { "enum": ["code_rotated", null] },
+        "sourceInviteCodeId": { "type": ["string", "null"] },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" },
+        "endedAt": { "type": ["string", "null"] }
+      },
+      "required": [
+        "id",
+        "professionalAuthUid",
+        "studentAuthUid",
+        "status",
+        "specialty",
+        "canceledReason",
+        "sourceInviteCodeId",
+        "createdAt",
+        "updatedAt",
+        "endedAt"
+      ]
+    },
+    "connectionInviteGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "connectionId": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "studentAuthUid": { "type": "string", "minLength": 1 },
+        "specialty": { "$ref": "#/definitions/specialty" },
+        "status": { "const": "pending_confirmation" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "id",
+        "connectionId",
+        "professionalAuthUid",
+        "studentAuthUid",
+        "specialty",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "pendingStudent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "studentAuthUid": { "type": "string", "minLength": 1 },
+        "slotId": { "type": "string", "minLength": 1 },
+        "nutritionistConnectionId": { "type": ["string", "null"] },
+        "fitnessCoachConnectionId": { "type": ["string", "null"] },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "id",
+        "professionalAuthUid",
+        "studentAuthUid",
+        "slotId",
+        "nutritionistConnectionId",
+        "fitnessCoachConnectionId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "pendingStudentSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "slotId": { "type": "string", "minLength": 1 },
+        "studentAuthUid": { "type": ["string", "null"] },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "id",
+        "professionalAuthUid",
+        "slotId",
+        "studentAuthUid",
+        "updatedAt"
+      ]
+    },
+    "trackingAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "studentAuthUid": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "specialty": { "$ref": "#/definitions/specialty" },
+        "connectionId": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["active", "ended"] },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "id",
+        "studentAuthUid",
+        "professionalAuthUid",
+        "specialty",
+        "connectionId",
+        "status",
+        "updatedAt"
+      ]
+    },
+    "activeSpecialty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "studentAuthUid": { "type": "string", "minLength": 1 },
+        "professionalAuthUid": { "type": "string", "minLength": 1 },
+        "specialty": { "$ref": "#/definitions/specialty" },
+        "connectionId": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["active", "ended"] },
+        "updatedAt": { "$ref": "#/definitions/timestamp" }
+      },
+      "required": [
+        "id",
+        "studentAuthUid",
+        "professionalAuthUid",
+        "specialty",
+        "connectionId",
+        "status",
+        "updatedAt"
+      ]
+    }
+  }
+}

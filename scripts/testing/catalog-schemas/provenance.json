@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "copies": [
+    {
+      "name": "food",
+      "path": "food-catalog-schema.sql",
+      "export": "FOOD_CATALOG_SCHEMA_SQL",
+      "repository": "edufelip/MyChampions_Food_Microservice",
+      "source": "src/catalog/infrastructure/postgres/catalog-persistence-schema.ts",
+      "sourceCommit": "b1f16c481f22f444270a489d9b1a6058c2abd537",
+      "sha256": "c8974edff92f58be55325af9fbd4aeed901382b0a85b4bcb77fa7aa8449ce1b9"
+    },
+    {
+      "name": "exercise",
+      "path": "exercise-catalog-schema.sql",
+      "export": "EXERCISE_CATALOG_SCHEMA_SQL",
+      "repository": "edufelip/MyChampions_Exercise_Microservice",
+      "source": "src/infrastructure/postgres/catalog-persistence-schema.ts",
+      "sourceCommit": "40fe07020db036d7f2a1d459b4feff83c41b8f40",
+      "sha256": "ed5d31f29281259c07d4f73ec17bf62fab8e595529d193e079305e3ccf91bfbb"
+    }
+  ]
+}

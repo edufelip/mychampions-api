@@ -4,3 +4,9 @@ node_modules/
 .env.*
 !.env.example
 infra/secrets/
+
+# Private owned test runtimes and receipts
+.qa/
+
+# Owned isolated native-control dependency link; not a source input.
+/node_modules

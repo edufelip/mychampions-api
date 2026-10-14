@@ -1,3 +1,4 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 
@@ -5,9 +6,7 @@ import { PasswordResetConfirmError } from '../src/auth/password-reset';
 import { PostgresPasswordResetService } from '../src/auth/postgres-password-reset';
 import { createDatabase } from '../src/db/client';
 
-const databaseUrl =
-  process.env.DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_server_local';
+const databaseUrl = await requireOwnedTestDatabase('DATABASE_URL');
 
 const database = createDatabase(databaseUrl);
 

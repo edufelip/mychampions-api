@@ -1,3 +1,4 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -5,18 +6,13 @@ import {
   PostgresExerciseSearchGateway,
 } from '../src/integrations/exercise-search-gateway';
 
-const databaseUrl =
-  process.env.EXERCISE_CATALOG_DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_exercise_catalog_local';
+const databaseUrl = await requireOwnedTestDatabase('EXERCISE_CATALOG_DATABASE_URL');
 
-// These assert against real catalog rows, which only exist when
-// EXERCISE_CATALOG_DATABASE_URL points at a database mirrored from
-// production (`bun run local:db:mirror`). Hosted CI provisions an empty
-// Postgres, so it can't run these; skip there and rely on local dev runs.
-const isCI = process.env.CI === 'true';
-
+// The owned runner (local and hosted CI) seeds three synthetic exercises with
+// en/pt/es localizations into the owned exercise catalog
+// (scripts/testing/seed.ts), so these run everywhere the owned database exists.
 describe('PostgresExerciseSearchGateway', () => {
-  it.skipIf(isCI)('normalizes localized catalog rows and loads the same exercise by id', async () => {
+  it('normalizes localized catalog rows and loads the same exercise by id', async () => {
     const gateway = new PostgresExerciseSearchGateway(databaseUrl);
 
     const search = await gateway.search({
@@ -46,7 +42,7 @@ describe('PostgresExerciseSearchGateway', () => {
     expect(detail?.title.length).toBeGreaterThan(0);
   });
 
-  it.skipIf(isCI)('returns null for a missing exercise', async () => {
+  it('returns null for a missing exercise', async () => {
     const gateway = new PostgresExerciseSearchGateway(databaseUrl);
 
     await expect(
@@ -58,9 +54,7 @@ describe('PostgresExerciseSearchGateway', () => {
     ).resolves.toBeNull();
   });
 
-  // Unlike the two tests above, this never touches the catalog database (the
-  // gateway is unconfigured), so it runs in hosted CI same as the food
-  // gateway's equivalent check in tests/postgres-food-search-gateway.test.ts.
+  // This never touches the catalog database (the gateway is unconfigured).
   it('fails closed without catalog configuration', async () => {
     const unconfigured = new PostgresExerciseSearchGateway(null);
 

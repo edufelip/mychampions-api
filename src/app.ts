@@ -47,6 +47,9 @@ import { PostgresRefreshSessionRepository } from './auth/postgres-refresh-sessio
 import {
   InMemoryPasswordResetService,
   PasswordResetConfirmError,
+  isPasswordResetCompletionService,
+  type PasswordResetCompletionResult,
+  type PasswordResetCompletionService,
   type PasswordResetService,
 } from './auth/password-reset';
 import { PostgresPasswordResetService } from './auth/postgres-password-reset';
@@ -154,6 +157,7 @@ type CreateAppDeps = {
   tokenService?: TokenService;
   refreshSessionService?: RefreshSessionServiceType;
   passwordResetService?: PasswordResetService;
+  passwordResetCompletionService?: PasswordResetCompletionService;
   passwordResetDeliveryGateway?: PasswordResetDeliveryGateway;
   emailAuthGateway?: EmailAuthGateway;
   socialAuthGateway?: SocialAuthGateway;
@@ -187,6 +191,16 @@ const AUTH_RATE_LIMITED_PATHS = new Set([
   "/auth/password-reset",
   "/auth/password-reset/confirm",
 ]);
+
+// Elysia also routes a path with exactly one trailing slash ("/auth/email/sign-in/") to
+// the same handler (two or more are not routed), so the limiter must match that form too
+// or it is a free bypass. This runs on every request, so it strips at most one slash in
+// constant time; a regex such as /\/+$/ backtracks quadratically on long slash runs.
+export function isAuthRateLimitedPath(pathname: string): boolean {
+  const normalized =
+    pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return AUTH_RATE_LIMITED_PATHS.has(normalized);
+}
 
 // Clients can send any forwarding header, so the key trusts only the one header
 // this deployment's own proxy overwrites (TRUSTED_PROXY_HEADER: X-Real-IP on
@@ -545,18 +559,23 @@ function passwordResetDeliveryGatewayErrorResponse(
 }
 
 function passwordResetConfirmErrorResponse(error: unknown, set: { status?: number | string }) {
-  if (!(error instanceof PasswordResetConfirmError)) {
-    throw error;
+  // A missing account is answered exactly like a bad token (and the token stays
+  // pending), so the confirm route never reveals whether an email is registered.
+  if (
+    error instanceof PasswordResetConfirmError ||
+    (error instanceof EmailAuthGatewayError && error.code === 'account_not_found')
+  ) {
+    set.status = 400;
+    return {
+      error: {
+        code: 'invalid_or_expired_token',
+        message: 'Password reset token is invalid or expired.',
+      },
+    };
   }
 
-  set.status = 400;
-
-  return {
-    error: {
-      code: error.code,
-      message: error.message,
-    },
-  };
+  // Provider failures (e.g. an unconfigured provider -> 503) keep their own shape.
+  return emailAuthGatewayErrorResponse(error, set);
 }
 
 function inviteCodeResponse(inviteCode: InviteCode) {
@@ -1287,7 +1306,13 @@ export function createApp(deps: CreateAppDeps = {}) {
         })
       : new InMemoryPasswordResetService({
           deliveryGateway: passwordResetDeliveryGateway,
+          passwordUpdater: emailAuthGateway,
         }));
+  // The confirm route only uses the atomic consume-and-update operation. A reset
+  // service that cannot do that needs an explicit completion service.
+  const passwordResetCompletionService =
+    deps.passwordResetCompletionService ??
+    (isPasswordResetCompletionService(passwordResetService) ? passwordResetService : undefined);
   const analyticsEventRepository =
     deps.analyticsEventRepository ??
     (database
@@ -1466,7 +1491,7 @@ export function createApp(deps: CreateAppDeps = {}) {
         duration: config.authRateLimitWindowMs,
         max: config.authRateLimitMax,
         generator: authRateLimitClientKey(config.trustedProxyHeader),
-        skip: (request) => !AUTH_RATE_LIMITED_PATHS.has(new URL(request.url).pathname),
+        skip: (request) => !isAuthRateLimitedPath(new URL(request.url).pathname),
       })
     )
     .get('/health', () => ({
@@ -1784,26 +1809,37 @@ export function createApp(deps: CreateAppDeps = {}) {
           return { error: { code: 'invalid_email', message: 'Email is invalid.' } };
         }
 
+        if (!passwordResetCompletionService) {
+          throw new Error('password_reset_completion_not_configured');
+        }
+
+        // One atomic step: the token is consumed only if the password update succeeds.
+        let completion: PasswordResetCompletionResult;
         try {
-          await passwordResetService.confirm({
+          completion = await passwordResetCompletionService.confirmAndUpdatePassword({
             emailNormalized,
             token: body.token,
+            newPassword: body.newPassword,
           });
         } catch (error) {
           return passwordResetConfirmErrorResponse(error, set);
         }
 
-        let updateResult: { authUid: string };
+        // Required, not redundant: the Postgres completion revokes sessions inside its
+        // transaction, but a refresh rotation that commits while that transaction waits can
+        // insert a session it never sees. Revoking after commit catches it and covers
+        // completion implementations without their own revoke; it is idempotent.
+        // The reset has committed by now, so a failure here must not answer an error: the
+        // client's retry would only meet a consumed token. Try once more, then report it.
         try {
-          updateResult = await emailAuthGateway.updatePassword({
-            email: emailNormalized,
-            newPassword: body.newPassword,
-          });
-        } catch (error) {
-          return emailAuthGatewayErrorResponse(error, set);
+          await refreshSessionService.revokeAllForAuthUid(completion.authUid);
+        } catch {
+          try {
+            await refreshSessionService.revokeAllForAuthUid(completion.authUid);
+          } catch {
+            console.error(JSON.stringify({ event: 'password_reset_post_commit_revoke_failed' }));
+          }
         }
-
-        await refreshSessionService.revokeAllForAuthUid(updateResult.authUid);
 
         set.status = 200;
         return { status: 'reset' };
@@ -2201,13 +2237,27 @@ export function createApp(deps: CreateAppDeps = {}) {
 
       const connections = await connectionRepository.listForAuthUid(auth.sub);
       return {
-        connections: connections.map((connection) => ({
-          id: connection.id,
-          status: connection.status,
-          canceledReason: connection.canceledReason,
-          specialty: connection.specialty,
-          professionalAuthUid: connection.professionalAuthUid,
-        })),
+        connections: await Promise.all(
+          connections.map(async (connection) => {
+            const record = {
+              id: connection.id,
+              status: connection.status,
+              canceledReason: connection.canceledReason,
+              specialty: connection.specialty,
+              professionalAuthUid: connection.professionalAuthUid,
+            };
+            // The professional sees the student's name for the same connections the
+            // roster lists (active and pending); students receive no student fields.
+            if (
+              connection.professionalAuthUid !== auth.sub ||
+              (connection.status !== 'active' && connection.status !== 'pending_confirmation')
+            ) {
+              return record;
+            }
+            const profile = await profileRepository.findByAuthUid(connection.studentAuthUid);
+            return { ...record, studentDisplayName: profile?.displayName?.trim() || null };
+          })
+        ),
       };
     })
     .get(

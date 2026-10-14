@@ -1,0 +1,272 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/application-fixtures-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{24}$"
+    },
+    "scope": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,32}$"
+    },
+    "accounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "new": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": null
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        },
+        "student": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "student"
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        },
+        "coach": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "professional"
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        },
+        "unrelated-student": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "student"
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        },
+        "unrelated-coach": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "professional"
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        },
+        "pending-student": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "student"
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        },
+        "active-student": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "email": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@example\\.test$"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 12
+            },
+            "authUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "student"
+            }
+          },
+          "required": ["email", "password", "authUid", "role"]
+        }
+      },
+      "required": [
+        "new",
+        "student",
+        "coach",
+        "unrelated-student",
+        "unrelated-coach",
+        "pending-student",
+        "active-student"
+      ]
+    },
+    "pendingConnectionId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$"
+    },
+    "activeConnectionId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$"
+    },
+    "savedPlanId": {
+      "type": "string",
+      "pattern": "^training_plan_[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$"
+    },
+    "draft": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "notes": {
+                "type": "string"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "quantity": {
+                      "type": "string"
+                    },
+                    "notes": {
+                      "type": "string"
+                    },
+                    "exerciseId": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$"
+                    }
+                  },
+                  "required": ["id", "name", "quantity", "notes", "exerciseId"]
+                },
+                "minItems": 1
+              }
+            },
+            "required": ["id", "name", "notes", "items"]
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["name", "sessions"]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runId",
+    "scope",
+    "accounts",
+    "pendingConnectionId",
+    "activeConnectionId",
+    "savedPlanId",
+    "draft"
+  ]
+}

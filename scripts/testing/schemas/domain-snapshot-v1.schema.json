@@ -1,0 +1,154 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/domain-snapshot-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{24}$"
+    },
+    "scope": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,32}$"
+    },
+    "readOnly": {
+      "const": true
+    },
+    "trainingPlans": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "studentAuthUid": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ownerProfessionalUid": {
+            "type": ["string", "null"]
+          },
+          "sourceKind": {
+            "enum": ["predefined", "assigned", "self_managed"]
+          },
+          "name": {
+            "type": ["string", "null"]
+          },
+          "isArchived": {
+            "type": "boolean"
+          },
+          "isDraft": {
+            "type": "boolean"
+          },
+          "lifecycleConnectionId": {
+            "type": ["string", "null"]
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "studentAuthUid",
+          "ownerProfessionalUid",
+          "sourceKind",
+          "name",
+          "isArchived",
+          "isDraft",
+          "lifecycleConnectionId",
+          "sessions",
+          "createdAt",
+          "updatedAt"
+        ]
+      }
+    },
+    "connections": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "professionalAuthUid": {
+            "type": "string",
+            "minLength": 1
+          },
+          "studentAuthUid": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": ["invited", "pending_confirmation", "active", "ended"]
+          },
+          "specialty": {
+            "enum": ["nutritionist", "fitness_coach"]
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "endedAt": {
+            "type": ["string", "null"]
+          },
+          "canceledReason": {
+            "type": ["string", "null"]
+          },
+          "sourceInviteCodeId": {
+            "type": ["string", "null"]
+          },
+          "sourceInviteCodeValue": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": [
+          "id",
+          "professionalAuthUid",
+          "studentAuthUid",
+          "status",
+          "specialty",
+          "createdAt",
+          "updatedAt",
+          "endedAt",
+          "canceledReason",
+          "sourceInviteCodeId",
+          "sourceInviteCodeValue"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runId",
+    "scope",
+    "readOnly",
+    "trainingPlans",
+    "connections"
+  ]
+}

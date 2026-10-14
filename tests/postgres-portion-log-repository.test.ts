@@ -1,11 +1,10 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 
 import { createDatabase } from '../src/db/client';
 import { PostgresPortionLogRepository } from '../src/nutrition/postgres-portion-log-repository';
 
-const databaseUrl =
-  process.env.DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_server_local';
+const databaseUrl = await requireOwnedTestDatabase('DATABASE_URL');
 
 const database = createDatabase(databaseUrl);
 const repository = new PostgresPortionLogRepository(database.db);

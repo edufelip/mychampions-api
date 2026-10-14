@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mychampions.test/testing/session-request-v1.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "op": {
+          "const": "seed"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}$"
+        }
+      },
+      "required": ["id", "op", "scope"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "op": {
+          "const": "restart"
+        },
+        "attempt": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        }
+      },
+      "required": ["id", "op", "attempt"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "op": {
+          "const": "stop"
+        }
+      },
+      "required": ["id", "op"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "op": {
+          "const": "snapshot"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}$"
+        }
+      },
+      "required": ["id", "op", "scope"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,48}$"
+        },
+        "op": {
+          "const": "connection-snapshot"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}$"
+        }
+      },
+      "required": ["id", "op", "scope"]
+    }
+  ]
+}

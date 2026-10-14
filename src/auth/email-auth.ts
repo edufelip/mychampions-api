@@ -37,6 +37,10 @@ export type EmailAuthGateway = {
   updatePassword(input: EmailAuthUpdatePasswordInput): Promise<EmailAuthUpdatePasswordResult>;
 };
 
+export function hashLocalEmailPassword(password: string): Promise<string> {
+  return Bun.password.hash(password, { algorithm: 'argon2id' });
+}
+
 export type EmailAuthGatewayErrorCode =
   | 'configuration'
   | 'invalid_credentials'
@@ -106,7 +110,7 @@ export class LocalEmailAuthGateway implements EmailAuthGateway {
     }
 
     const authUid = `local_email_${randomUUID()}`;
-    const passwordHash = await Bun.password.hash(input.password, { algorithm: 'argon2id' });
+    const passwordHash = await hashLocalEmailPassword(input.password);
     const [credential] = await this.db
       .insert(localEmailAuthCredentials)
       .values({
@@ -126,7 +130,7 @@ export class LocalEmailAuthGateway implements EmailAuthGateway {
   }
 
   async updatePassword(input: EmailAuthUpdatePasswordInput): Promise<EmailAuthUpdatePasswordResult> {
-    const passwordHash = await Bun.password.hash(input.newPassword, { algorithm: 'argon2id' });
+    const passwordHash = await hashLocalEmailPassword(input.newPassword);
     const [credential] = await this.db
       .update(localEmailAuthCredentials)
       .set({ passwordHash, updatedAt: new Date() })

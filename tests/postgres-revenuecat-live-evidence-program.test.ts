@@ -1,3 +1,4 @@
+import { requireOwnedTestDatabase } from './helpers/test-database';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -6,12 +7,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import postgres from 'postgres';
 
 // Runs infra/scripts/revenuecat-live-evidence.remote.ts the way the production container does
-// (`bun -e` from the server root) against the local database, with fetch replaced so nothing reaches
+// (`bun -e` from the server root) against the owned test database, with fetch replaced so nothing reaches
 // RevenueCat.
 const serverRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const databaseUrl =
-  process.env.DATABASE_URL ??
-  'postgres://mychampions_local:mychampions_local_password@localhost:15432/mychampions_server_local';
+// Owned integration lane only: never the developer database.
+const databaseUrl = await requireOwnedTestDatabase('DATABASE_URL');
 const databaseName = new URL(databaseUrl).pathname.slice(1);
 const databasePassword = decodeURIComponent(new URL(databaseUrl).password);
 const secretApiKey = 'sk_live_evidence_contract_secret';

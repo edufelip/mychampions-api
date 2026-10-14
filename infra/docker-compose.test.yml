@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16.6-alpine
+    labels:
+      com.mychampions.test.run: ${MC_TEST_RUN_ID:?owned run required}
+      com.mychampions.test.owner-hash: ${MC_TEST_OWNER_HASH:?owned owner digest required}
+    environment:
+      POSTGRES_USER: mc_test
+      POSTGRES_PASSWORD: ${MC_TEST_PASSWORD:?owned password required}
+      POSTGRES_DB: ${MC_TEST_DATABASE:?owned database required}
+    ports:
+      - "127.0.0.1::5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mc_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    tmpfs:
+      - /var/lib/postgresql/data
+networks:
+  default:
+    labels:
+      com.mychampions.test.run: ${MC_TEST_RUN_ID:?owned run required}
+      com.mychampions.test.owner-hash: ${MC_TEST_OWNER_HASH:?owned owner digest required}
